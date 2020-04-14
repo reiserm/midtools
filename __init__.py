@@ -1,1 +1,1 @@
-from azimuthal_integration import azimuthal_integration
+from .azimuthal_integration import azimuthal_integration
