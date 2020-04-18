@@ -1,2 +1,3 @@
-# Extra Tools for Experiment 2458
-Juypter notebooks and python modules for experiment 2458
+# midtools 
+Data analysis tools and example jupyter notebooks for MID experinemts.
+Developed in preparation for experiment 2458.
