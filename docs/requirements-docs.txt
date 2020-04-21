@@ -1,0 +1,4 @@
+#requirements-docs.txt file 
+numpy
+sphinxcontrib-napoleon
+m2r
