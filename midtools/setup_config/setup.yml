@@ -1,0 +1,14 @@
+# setup.yaml file
+
+photon_energy: 9 # keV
+sample_detector: 8 # m
+pixel_size: 200 # um
+
+quadrant_positions:
+  dx: -18 
+  dy: -15
+  q1: [-500, 650]
+  q2: [-550, -30]
+  q3: [ 570, -216]
+  q4: [ 620, 500]
+
