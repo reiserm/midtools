@@ -1,4 +1,4 @@
-# setup.yaml file
+# setup.yml file
 
 photon_energy: 9 # keV
 sample_detector: 8 # m
