@@ -32,4 +32,4 @@ Try to accomplish the following tasks:
 
 * Open the file and display the different datasets.
 
-* Calculate the position of the peak in I(q) as a function of imposed X-ray energy.
+* Calculate the position of the peak in I(q) as a function of the incident X-ray pulse energy.
