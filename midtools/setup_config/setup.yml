@@ -1,5 +1,13 @@
 # setup.yml file
 
+# data
+datdir: /gpfs/exfel/exp/MID/202001/p002458/scratch/example_data/r0522
+#  cycle: 202001
+#  proposal: 2458
+#  datatype: proc # or raw
+
+# Beamline
+
 photon_energy: 9 # keV
 sample_detector: 8 # m
 pixel_size: 200 # um
