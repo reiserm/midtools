@@ -21,11 +21,18 @@ Basic information are provided under **Getting Started**.
 
    tasks.rst
 
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: User Interface
+
+..   api.rst
 
 
-Indices and tables
-==================
 
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+.. Indices and tables
+   ==================
+
+    * :ref:`genindex`
+    * :ref:`modindex`
+    * :ref:`search`

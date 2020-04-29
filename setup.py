@@ -9,47 +9,38 @@ from distutils.command.sdist import sdist
 with open("README.md", "r") as fh:
     long_description = fh.read()
 
-# setup f2py
-ext = [Extension(name='Xana.XpcsAna.fecorrt3m',
-                 sources=['Xana/XpcsAna/fecorrt3m.f90'],
-                 f2py_options=['--verbose'])]
-
 setup(
     cmdclass={'sdist': sdist},
-    name = 'Xana',
-    version = '0.0.8',
+    name = 'midtools',
+    version = '0.0.1',
     packages=setuptools.find_packages(),
-    license = 'MIT',
+    license = 'BSD-III',
     author = 'Mario Reiser',
     author_email = 'mario.mkel@gmail.com',
-    url = 'https://github.com/reiserm/Xana',
-    download_url = 'https://github.com/reiserm/Xana/archive/v0.0.8-alpha.tar.gz',
-    keywords = ['data analysis', 'XPCS', 'XSVS', 'SAXS',],
-    description="Analysis software for XPCS, XSVS and SAXS data.",
+    url = 'https://github.com/reiserm/midtools',
+    download_url = '',
+    keywords = ['data analysis', 'XFEL', 'MID'],
+    description="Analysis tools to process MID measurements (runs).",
     long_description=long_description,
     long_description_content_type="text/markdown",
     python_requires ='>= 3.6',
     install_requires = [
         'numpy',
         'pandas',
-        'lmfit',
-        'numpy',
         'pyfai',
-        'cbf',
-        'emcee',
-        'corner',
         'h5py',
-        'ipywidgets',
+        'extra_data',
+        'extra_geom',
+        'dask[complete]',
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Science/Research',
         'Topic :: Scientific/Engineering :: Physics',
-        'License :: OSI Approved :: MIT License',
+        'License :: OSI Approved :: BSD License',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
   ],
-    ext_modules=ext,
 )
 
