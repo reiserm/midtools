@@ -34,43 +34,43 @@ def azimuthal_integration(run, method='average', partition="upex", quad_pos=None
     mask=None, to_counts=False, apply_internal_mask=True, setupfile=None,
     geom=None, savname='azimuthal_integration',  adu_per_photon=65, **kwargs):
   """Calculate the azimuthally integrated intensity of a run using dask.
-
+  
   Args:
     run (DataCollection): the run objection, e.g., created by ``RunDirectory``.
-
+  
     method (str, optional): how to integrate. Defaults to 'average'. Use
       'average' to average all trains and pulses. Use 'single' to calculate the
       azimuthally integrated intensity per pulse.
-
+  
     partition (str, optional): Maxwell partition. Defaults 'upex'. 'upex' for users, 'exfel' for
       XFEL employees.
-
+  
     quad_pos (list, optional): list of the four quadrant positions. If not
       provided, the latest configuration will be used.
-
+  
     verbose (bool, optional): whether to print output. Defaults to True.
-
+  
     mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0. If None,
       no pixel is masked.
-
+  
     to_count (bool, optional): Convert the adus to photon counts based on
       thresholding and the value of adu_per_photon.
-
+  
     apply_internal_mask (bool, optional): Read and apply the mask calculated
       from the calibration pipeline. Defaults to True.
-
+  
     setupfile (str, optional): Xana setupfile. Defaults to None. Include path
       in the filename.
-
+  
     geom (geometry, optional):
-
+  
     savname (str, optional): Prefix of filename under which the results are
       saved automatically. Defaults to 'azimuthal_integration'. An incrementing
       number is added not to overwrite previous results.
-
+  
     adu_per_photon ((int,float), optional): number of ADUs per photon.
-
-
+  
+  
   Returns:
     dict: Dictionary containing the results depending on the method it
       contains the keys:
@@ -81,7 +81,7 @@ def azimuthal_integration(run, method='average', partition="upex", quad_pos=None
       - for single:
         - 'soq-pr': azimuthal intensity pulse resolved
         - 'q(nm-1)': the q-values in inverse nanometers
-
+  
   """
 
   def integrate_azimuthally(data, returnq=True):
