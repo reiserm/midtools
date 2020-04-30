@@ -36,13 +36,13 @@ def azimuthal_integration(run, method='average', partition="upex", quad_pos=None
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
-        run (DataCollection): the run objection, e.g., created by ``RunDirectory``.
+        run (DataCollection): the run objection, e.g., created by RunDirectory.
 
-        method (str, optional): how to integrate. Defaults to 'average'. Use
-            'average' to average all trains and pulses. Use 'single' to calculate the
+        method (str, optional): how to integrate. Defaults to average. Use
+            average to average all trains and pulses. Use single to calculate the
             azimuthally integrated intensity per pulse.
 
-        partition (str, optional): Maxwell partition. Defaults 'upex'. 'upex' for users, 'exfel' for
+        partition (str, optional): Maxwell partition. Defaults upex. upex for users, exfel for
             XFEL employees.
 
         quad_pos (list, optional): list of the four quadrant positions. If not
@@ -65,22 +65,21 @@ def azimuthal_integration(run, method='average', partition="upex", quad_pos=None
         geom (geometry, optional):
 
         savname (str, optional): Prefix of filename under which the results are
-            saved automatically. Defaults to 'azimuthal_integration'. An incrementing
+            saved automatically. Defaults to azimuthal_integration. An incrementing
             number is added not to overwrite previous results.
 
         adu_per_photon ((int,float), optional): number of ADUs per photon.
 
-
     Returns:
         dict: Dictionary containing the results depending on the method it
             contains the keys:
-            - for average:
-                - 'soq': the azimuthal intensity
-                - 'avr': the average image (16,512,128)
-                - 'img2d': the repositioned image in 2D
-            - for single:
-                - 'soq-pr': azimuthal intensity pulse resolved
-                - 'q(nm-1)': the q-values in inverse nanometers
+              * for average:
+                * 'soq': the azimuthal intensity
+                * 'avr': the average image (16,512,128)
+                * 'img2d': the repositioned image in 2D
+              * for single:
+                * 'soq-pr': azimuthal intensity pulse resolved
+                * 'q(nm-1)': the q-values in inverse nanometers
     """
 
     def integrate_azimuthally(data, returnq=True):
