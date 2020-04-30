@@ -7,7 +7,8 @@ datdir: /gpfs/exfel/exp/MID/202001/p002458/scratch/example_data/r0522
 #  datatype: proc # or raw
 #  run: 1
 
-mask: /gpfs/exfel/exp/MID/202001/p002458/scratch/midtools/agipd_mask_tmp.npy
+# mask: /gpfs/exfel/exp/MID/202001/p002458/scratch/midtools/agipd_mask_tmp.npy
+mask: /gpfs/exfel/data/user/reiserm/projects/proteins/mid-p2458/midtools/midtools/setup_config/cryo_mask.npy
 
 # Beamline
 
