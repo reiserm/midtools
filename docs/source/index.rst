@@ -26,7 +26,7 @@ Basic information are provided under **Getting Started**.
    :hidden:
    :caption: User Interface
 
-..   api.rst
+   api.rst
 
 
 
