@@ -13,8 +13,8 @@
 import os
 import sys
 sys.path.insert(0, os.path.abspath('../..'))
-sys.setrecursionlimit(1500) 
- 
+sys.setrecursionlimit(1500)
+
 import sphinx_rtd_theme
 
 # -- Project information -----------------------------------------------------
@@ -33,7 +33,7 @@ release = 'v0.0.1'
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'sphinxcontrib.napoleon',
+    'sphinx.ext.napoleon',
     'sphinx.ext.autodoc',
     'sphinx.ext.todo',
     'sphinx.ext.viewcode',
