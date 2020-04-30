@@ -9,12 +9,22 @@ from midtools import azimuthal_integration
 
 class Dataset:
 
-    def __init__(self, setupfile):
+    def __init__(self, setupfile, analysis=None):
         """Dataset class to handle MID datasets on Maxwell.
 
         Args:
             setupfile (str): Setupfile (.yml) that contains information on the
                 setup parameters.
+            analysis (:obj:`str`, optional): Flags of the analysis to perform. Defaults to None.
+                analysis is a string of ones and zeros where a one means to perform the analysis
+                and a zero means to omit the analysis. The analysis types are::
+                
+                +-------+----------------------------+
+                | flags | analysis                   |
+                +=======+============================+
+                | 10    | SAXS azimuthal integration |
+                | 01    | XPCS correlation functions |
+                +-------+----------------------------+
 
         Note:
             A setupfile might look like this::
