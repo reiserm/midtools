@@ -5,6 +5,9 @@ datdir: /gpfs/exfel/exp/MID/202001/p002458/scratch/example_data/r0522
 #  cycle: 202001
 #  proposal: 2458
 #  datatype: proc # or raw
+#  run: 1
+
+mask: /gpfs/exfel/exp/MID/202001/p002458/scratch/midtools/agipd_mask_tmp.npy
 
 # Beamline
 
@@ -20,3 +23,9 @@ quadrant_positions:
   q3: [ 570, -216]
   q4: [ 620, 500]
 
+# XPCS
+
+q_range:
+  q_first: .1 # smallest q in nm-1
+  q_last: 1.  # largest q in nm-1
+  steps: 10   # how many q-bins
