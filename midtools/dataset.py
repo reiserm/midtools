@@ -17,12 +17,13 @@ class Dataset:
                 setup parameters.
             analysis (:obj:`str`, optional): Flags of the analysis to perform. Defaults to None.
                 analysis is a string of ones and zeros where a one means to perform the analysis
-                and a zero means to omit the analysis. The analysis types are::
-                
+                and a zero means to omit the analysis. The analysis types are:
+
                 +-------+----------------------------+
                 | flags | analysis                   |
                 +=======+============================+
                 | 10    | SAXS azimuthal integration |
+                +-------+----------------------------+
                 | 01    | XPCS correlation functions |
                 +-------+----------------------------+
 
