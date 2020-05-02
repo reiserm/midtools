@@ -32,6 +32,7 @@ setup(
         'extra_data',
         'extra_geom',
         'dask[complete]',
+        'Xana',
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
