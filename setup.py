@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import setuptools
 from setuptools import find_packages
-from numpy.distutils.core import setup, Extension
+from distutils.core import setup
 import os
 from distutils.command.sdist import sdist
 
@@ -24,11 +24,15 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     python_requires ='>= 3.6',
+    setup_requires = [
+        'scipy',
+    ],
     install_requires = [
-        'numpy',
+        'scipy',
         'pandas',
         'pyfai',
         'h5py',
+        'PyYAML',
         'extra_data',
         'extra_geom',
         'dask[complete]',

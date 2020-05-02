@@ -12,7 +12,7 @@ from extra_geom import AGIPD_1MGeometry
 from midtools import azimuthal_integration
 
 class Dataset:
-    
+
     METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS']
 
     def __init__(self, setupfile, analysis='00'):
