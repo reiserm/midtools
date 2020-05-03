@@ -6,3 +6,4 @@ extra_data
 extra_geom
 dask[complete]
 dask-jobqueue
+Xana
