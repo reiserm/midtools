@@ -39,6 +39,11 @@ setup(
         'dask_jobqueue',
         'Xana',
     ],
+    entry_points={
+        'console_scripts': [
+            'midtools = midtools.dataset:main',
+        ],
+    },
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Science/Research',
