@@ -25,10 +25,10 @@ setup(
     long_description_content_type="text/markdown",
     python_requires ='>= 3.6',
     setup_requires = [
-        'scipy',
+        'numpy',
     ],
     install_requires = [
-        'scipy',
+        'numpy',
         'pandas',
         'pyfai',
         'h5py',
@@ -36,6 +36,7 @@ setup(
         'extra_data',
         'extra_geom',
         'dask[complete]',
+        'dask_jobqueue',
         'Xana',
     ],
     classifiers=[
