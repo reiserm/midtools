@@ -26,7 +26,8 @@ quadrant_positions:
 
 # XPCS
 
-q_range:
-  q_first: .1 # smallest q in nm-1
-  q_last: 1.  # largest q in nm-1
-  steps: 10   # how many q-bins
+xpcs_opt:
+    - q_range:
+          q_first: .1 # smallest q in nm-1
+          q_last: 1.  # largest q in nm-1
+          steps: 10   # how many q-bins
