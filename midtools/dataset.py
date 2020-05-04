@@ -1,21 +1,36 @@
 #!/usr/bin/env python
+
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning) 
+
 import os
 import yaml
 import re
 import sys
+import time
 import numpy as np
 import h5py as h5
 
+# XFEL packages
 from extra_data import RunDirectory
 from extra_geom import AGIPD_1MGeometry
 
-from midtools import azimuthal_integration
+# Dask
+import dask.array as da
+from dask.distributed import Client, progress
+from dask_jobqueue import SLURMCluster
+from dask.diagnostics import ProgressBar
+
+from Xana import Setup
+
+from .azimuthal_integration import azimuthal_integration
+from .correlations import correlation
 
 class Dataset:
 
     METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS']
 
-    def __init__(self, setupfile, analysis='00'):
+    def __init__(self, setupfile, analysis='00', last_train=np.inf):
         """Dataset class to handle MID datasets on Maxwell.
 
         Args:
@@ -84,6 +99,15 @@ class Dataset:
         self.center = None
 
         self.agipd_geom = setup_pars.pop('quadrant_positions', False)
+
+        #: dict: options for the Slurm cluster
+        self._slurm_opt = setup_pars.pop('slurm_opt', {})
+        #: dict: options for the SAXS algorithm 
+        self._saxs_opt = setup_pars.pop('saxs_opt', {})
+        #: dict: options for the XPCS algorithm 
+        self._xpcs_opt = setup_pars.pop('xpcs_opt', {})
+        
+        # save the other entries as attributes
         self.__dict__.update(setup_pars)
 
         #: int: Number of X-ray pulses per train.
@@ -95,35 +119,61 @@ class Dataset:
         #: np.ndarray: All train IDs.
         self.train_ids = np.array(self.run.train_ids)
 
+        #: int: last train index to compute
+        self.last_train_idx = min([last_train,len(self.train_ids)])
+
+        #: int: Number of complete trains
+        self.ntrains = min([len(self.train_ids), self.last_train_idx])
+
         #: np.ndarray: All train indices.
         self.train_indices = np.arange(self.train_ids.size)
+
+        self.setup = Setup(detector='agipd1m')
+        self.setup.mask = self.mask.copy()
+        self.setup.make(**dict(center=self.center,
+            wavelength=12.39/self.photon_energy,
+            distance=self.sample_detector,))
+        dist = self.agipd_geom.to_distortion_array()
+        self.setup.detector.IS_CONTIGUOUS = False
+        self.setup.detector.set_pixel_corners(dist)
+        self.setup.update_ai()
+
+        qmap = self.setup.ai.array_from_unit(unit='q_nm^-1');
+        #: np.ndarray: q-map
+        self.qmap = qmap.reshape(16,512,128);
 
         del setup_pars
 
         #: dict: Structure of the HDF5 file
-        self.h5_strcuture = self._make_h5structure()
+        self.h5_structure = self._make_h5structure()
 
         #: str: HDF5 file name.
         self.file_name = None
+
+        # placeholder attributes
+        self._cluster = None # the slurm cluster
+        self._client = None # the slurm cluster client
 
     def _make_h5structure(self):
         """Create the HDF5 data structure.
         """
         h5_structure = {
             'META':{
-                "/identifiers/pulses_per_train",
-                "/identifiers/pulse_ids",
-                "/identifiers/train_ids",
-                "/identifiers/train_indices",
+                "/identifiers/pulses_per_train":[(1,),'int8'],
+                "/identifiers/pulse_ids":[(self.pulses_per_train,), 'int8'],
+                "/identifiers/train_ids":[(self.ntrains,), 'int16'],
+                "/identifiers/train_indices":[(self.ntrains,), 'int8'],
             },
             'DIAGNOSTICS':{
-                "/pulse_resolved/xgm/energy",
+                "/pulse_resolved/xgm/energy":[(self.ntrains,self.pulses_per_train),'float32'],
             },
             'SAXS':{
-                "/average/azimuthal_intensity",
-                "/average/image_2d",
-                "/pulse_resolved/azimuthal_intensity/q",
-                "/pulse_resolved/azimuthal_intensity/I",
+                "/average/azimuthal_intensity":[(2,500),'float32'],
+                "/average/image_2d":[None, 'float32'],
+                "/average/image":[(16,512,128), 'float32'],
+                "/pulse_resolved/azimuthal_intensity/q":[(500,), 'float32'],
+                "/pulse_resolved/azimuthal_intensity/I":[(self.ntrains*self.pulses_per_train,500),
+                    'float32'],
             },
             'XPCS':{
 
@@ -180,7 +230,7 @@ class Dataset:
 
         self.__agipd_geom = geom
         dummy_img = np.zeros((16,512,128), 'int8')
-        self.center = geom.position_modules_fast(dummy_img)[1]
+        self.center = geom.position_modules_fast(dummy_img)[1][::-1]
         del dummy_img
 
     @property
@@ -283,6 +333,33 @@ class Dataset:
         pulse_ids = np.array(train_data[source]['image.pulseId'])
         return pulse_ids
 
+    def _start_slurm_cluster(self):
+        """Initialize the slurm cluster"""
+
+        nprocs = max([int(self.ntrains/200),4])
+        # print(f"Using {nprocs} processes to initialize SLRUMCluster")
+        opt = self._slurm_opt
+        self._cluster = SLURMCluster(
+            queue=opt.get('partition','exfel'),
+            processes=8, 
+            cores=72, 
+            memory='512GB',
+            log_directory='./dask_log/',
+            local_directory='./dask_tmp/',
+            nanny=True,
+            death_timeout=100,
+            walltime="02:00:00",
+        )
+
+        self._cluster.scale(8*16)
+        self._client = Client(self._cluster)
+        print("Cluster dashboard link:", self._cluster.dashboard_link)
+
+    def _stop_slurm_cluster(self):
+        """Shut down the slurm cluster"""
+        self._client.close()
+        self._cluster.close()
+
     def _create_output_file(self, filename=None):
         """Create the HDF5 output file.
         """
@@ -290,13 +367,16 @@ class Dataset:
         if filename is None:
             filename = f"./r{self.run_number:04}-analysis.h5"
 
+        filename = filename.replace(".h5","") +"_"+ str(int(time.time())) + ".h5"
+
         self.file_name = os.path.abspath(filename)
 
-        for flag, method in zip(self.analysis, self.METHODS):
-            if int(flag):
-                with h5.File(self.file_name, 'a') as f:
-                    for path in self.h5_strcuture[method]:
-                        f.create_dataset(path, dtype='int8')
+        with h5.File(self.file_name, 'a') as f:
+            for flag, method in zip(self.analysis, self.METHODS):
+                if int(flag):
+                    for path,(shape,dtype) in self.h5_structure[method].items():
+                        pass
+                        # f.create_dataset(path, shape=shape, dtype=dtype)
 
     def compute(self, filename=None, create_file=True):
         """Start the actual computation based on the analysis attribute.
@@ -305,29 +385,138 @@ class Dataset:
         if create_file:
             self._create_output_file(filename)
 
-        for flag, method in zip(self.analysis, self.METHODS):
-            if int(flag):
-                print(f"Doing {method}")
-                getattr(self, f"_compute_{method.lower()}")()
+        try:
+            for i, (flag, method) in enumerate(zip(self.analysis, self.METHODS)):
+                if int(flag):
+                    if i == 2:
+                        self._start_slurm_cluster()
+                    print(f"Computing {method}")
+                    getattr(self,
+                            f"_compute_{method.lower()}")()
+
+        finally:
+            if self._client is not None:
+                self._stop_slurm_cluster()
 
     def _compute_meta(self):
+        """Read metadata. """
         self.train_ids, self.train_indices = self._get_good_trains(self.run)
+        self.last_train_idx = min([self.last_train_idx,self.train_indices.size])
+        self.ntrains = min([len(self.train_ids), self.last_train_idx])
+
+        # writing output to hdf5 file
+        with h5.File(self.file_name, 'r+') as f:
+            keys = list(self.h5_structure['META'].keys())
+            values = [
+                self.pulses_per_train,
+                self.pulse_ids,
+                self.train_ids,
+                self.train_indices,
+                ]
+            for keyh5,item in zip(keys,values):
+                f[keyh5] = item
 
     def _compute_diagnostics(self):
-        pass
+        """Read diagnostic data like XGM. """
+        arr = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output', 'data.intensityTD')
+        arr = arr[self.train_indices,:self.pulses_per_train]
+
+        # writing output to hdf5 file
+        with h5.File(self.file_name, 'r+') as f:
+            keys = list(self.h5_structure['DIAGNOSTICS'].keys())
+            for keyh5,item in zip(keys,[arr]):
+                f[keyh5] = item
+
+    def _compute_saxs(self):
+        """Perform the azimhuthal integration."""
+
+        # specify SAXS options
+        saxs_opt = dict( 
+	            mask=self.mask, 
+                to_counts=False, 
+                apply_internal_mask=True, 
+                setup=self.setup,
+                client=self._client,
+                geom=self.agipd_geom, 
+                adu_per_photon=65, 
+                last=self.last_train_idx*self.pulses_per_train,
+                )
+        saxs_opt.update(self._saxs_opt)
+
+        # compute average
+        print('Compute average SAXS')
+        out = azimuthal_integration(self.run, 
+                method='average', **saxs_opt)
+
+        # writing output to hdf5 file
+        with h5.File(self.file_name, 'r+') as f:
+            keys = list(self.h5_structure['SAXS'].keys())[:3]
+            for keyh5,item in zip(keys,out.values()):
+                f[keyh5] = item
+        del out
+
+        # compute pulse resolved
+        print('\nCompute pulse resolved SAXS')
+        out = azimuthal_integration(self.run, 
+                method='single', **saxs_opt)
+
+        # writing output to hdf5 file
+        with h5.File(self.file_name, 'r+') as f:
+            keys = list(self.h5_structure['SAXS'].keys())[3:]
+            for keyh5,item in zip(keys,out.values()):
+                f[keyh5] = item
+        del out
+
+    def _compute_xpcs(self):
+        """Calculate correlation functions."""
+
+        # specify XPCS options
+        xpcs_opt = dict( 
+	            mask=self.mask, 
+                qmap = self.qmap,
+                to_counts=False, 
+                apply_internal_mask=True, 
+                setup=self.setup,
+                client=self._client,
+                geom=self.agipd_geom, 
+                adu_per_photon=65, 
+                last=self.last_train_idx,
+                )
+        xpcs_opt.update(self._xpcs_opt)
+
+        # compute
+        print('Compute XPCS correlation funcions.')
+        out = azimuthal_integration(self.run, 
+                method='average', **saxs_opt)
+
+        # writing output to hdf5 file
+        with h5.File(self.file_name, 'r+') as f:
+            keys = list(self.h5_structure['XPCS'].keys())
+            for keyh5,item in zip(keys,out.values()):
+                f[keyh5] = item
+        del out
 
 def main():
-    args = list(sys.argv)
+    t_start = time.time()
+    args = list(sys.argv[1:])
 
-    setupfile = args[1]
-    analysis = args[2]
+    setupfile = args[0]
+    analysis = ''
+    last_train = np.inf
+    if len(args) > 1:
+        analysis = args[1]
+    if len(args) > 2:
+        last_train = int(args[2])
+        print(f"Analyzing first {last_train} trains.")
 
-    data = Dataset(setupfile, analysis)
+    data = Dataset(setupfile, analysis, last_train)
+    print("Analyzing ", data.datdir)
     data.compute()
-
-    print(data.datdir)
-    print(data.train_indices.size)
-
+    
+    print(f"Found {data.train_indices.size} complete trains")
+    elapsed_time = time.time() - t_start
+    print(f"Finished: elapsed time: {elapsed_time/60:.2f}min")
+    print(f"Results saved under {data.file_name}")
 
 if __name__ == "__main__":
     main()

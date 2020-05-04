@@ -9,6 +9,7 @@ import copy
 # main analysis software can be installed by: pip install Xana
 from Xana import Xana
 import Xana.Setup
+from Xana.XpcsAna.pyxpcs3 import pyxpcs
 
 # reading AGIPD data provided by XFEL
 from extra_data import RunDirectory, stack_detector_data, open_run
@@ -22,26 +23,14 @@ from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
 
-def azimuthal_integration(run, method='average', partition="upex",
+def correlation(run, method='average', partition="upex",
         quad_pos=None, verbose=False, last=None,
 	mask=None, to_counts=False, apply_internal_mask=True, setup=None,
     client=None, geom=None, savname=None, adu_per_photon=65, **kwargs):
-    """Calculate the azimuthally integrated intensity of a run using dask.
+    """Calculate XPCS correlation functions of a run using dask.
 
     Args:
         run (DataCollection): the run objection, e.g., created by RunDirectory.
-
-        method (str, optional): how to integrate. Defaults to average. Use
-            average to average all trains and pulses. Use single to calculate the
-            azimuthally integrated intensity per pulse.
-
-        partition (str, optional): Maxwell partition. Defaults upex. upex for users, exfel for
-            XFEL employees.
-
-        quad_pos (list, optional): list of the four quadrant positions. If not
-            provided, the latest configuration will be used.
-
-        verbose (bool, optional): whether to print output. Defaults to True.
 
         last (int, optional): last train index. Defaults None. Set to small
             number for testing.
@@ -55,28 +44,18 @@ def azimuthal_integration(run, method='average', partition="upex",
         apply_internal_mask (bool, optional): Read and apply the mask calculated
             from the calibration pipeline. Defaults to True.
 
-        setup ((str.Xana.Setup), optional): Xana setupfile. Defaults to None.
+        setup ((Xana.Setup), optional): Xana setupfile. Defaults to None.
             If str, include path in the filename. Otherwise provide Xana Setup
             instance.
 
-        geom (geometry, optional):
-
-        savname (str, optional): Prefix of filename under which the results are
-            saved automatically. Defaults to azimuthal_integration. An incrementing
-            number is added not to overwrite previous results.
+        geom (AGIPD1M-geometry, optional):
 
         adu_per_photon ((int,float), optional): number of ADUs per photon.
 
     Returns:
         dict: Dictionary containing the results depending on the method it
             contains the keys:
-              * for average:
-                * 'soq': the azimuthal intensity
-                * 'avr': the average image (16,512,128)
-                * 'img2d': the repositioned image in 2D
-              * for single:
-                * 'soq-pr': azimuthal intensity pulse resolved
-                * 'q(nm-1)': the q-values in inverse nanometers
+            * 'corf': the xpcs correlation function
     """
 
     def integrate_azimuthally(data, returnq=True):

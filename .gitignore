@@ -2,3 +2,9 @@
 *__pycache__
 *build
 *.egg-info
+*.swp
+*.h5
+tags
+dask_log
+dask_tmp
+testing
