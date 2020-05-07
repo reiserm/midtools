@@ -203,7 +203,7 @@ def azimuthal_integration(run, method='average', partition="upex",
             pickle.dump(savdict, open(savname, 'wb'))
 
     elif method == 'single':
-        arr = arr.stack(pixels=('module','dim_0','dim_1')).chunk({'train_pulse':1000})
+        arr = arr.stack(pixels=('module','dim_0','dim_1')).chunk({'train_pulse':350})
         q = integrate_azimuthally(arr[0])[0]
 
         dim = arr.get_axis_num("pixels")

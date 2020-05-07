@@ -1,3 +1,4 @@
+import pdb
 # standard python packages
 import numpy as np
 import scipy.integrate as integrate
@@ -23,10 +24,9 @@ from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
 
-def correlation(run, method='average', partition="upex",
-        quad_pos=None, verbose=False, last=None,
-	mask=None, to_counts=False, apply_internal_mask=True, setup=None,
-    client=None, geom=None, savname=None, adu_per_photon=65, **kwargs):
+def correlate(run, method='per_train', last=None, qmap=None,
+	mask=None,  npulses=None, to_counts=False, apply_internal_mask=True, 
+    setup=None, adu_per_photon=65, q_range=None, client=None,  **kwargs):
     """Calculate XPCS correlation functions of a run using dask.
 
     Args:
@@ -38,6 +38,8 @@ def correlation(run, method='average', partition="upex",
         mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0. If None,
             no pixel is masked.
 
+        npulses (int): Number of pulses per pulse train. Defaults to None.
+
         to_count (bool, optional): Convert the adus to photon counts based on
             thresholding and the value of adu_per_photon.
 
@@ -48,9 +50,14 @@ def correlation(run, method='average', partition="upex",
             If str, include path in the filename. Otherwise provide Xana Setup
             instance.
 
-        geom (AGIPD1M-geometry, optional):
-
         adu_per_photon ((int,float), optional): number of ADUs per photon.
+
+        client (dask.distributed.Client): Defaults to None.
+
+        qrange (dict): Information on the q-bins. Should contain the keys: 
+            * q_first
+            * q_last
+            * nsteps
 
     Returns:
         dict: Dictionary containing the results depending on the method it
@@ -58,85 +65,31 @@ def correlation(run, method='average', partition="upex",
             * 'corf': the xpcs correlation function
     """
 
-    def integrate_azimuthally(data, returnq=True):
+    def calculate_correlation(data, rois, return_='all',  **kwargs):
         # Check data type
         if isinstance(data, np.ndarray):
             pass
         elif isinstance(data, xarray.DataArray):
-            data = data.data
+            data = np.array(data.data)
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
+        
+        data = data.reshape(npulses,8192,128)
+        wnan = np.isnan(np.sum(data, axis=0))
+        xpcs_mask = mask_2d | ~wnan.reshape(8192,128)
 
-        # do azimuthal integration
-        wnan = np.isnan(data)
-        q, I = ai.integrate1d(data.reshape(8192,128),
-                              500,
-                              mask=~(mask.reshape(8192,128).astype('bool'))
-                                    | wnan.reshape(8192,128),
-                              unit='q_nm^-1', dummy=np.nan)
-        if returnq:
-            return q, I
-        else:
-            return I
+        out = pyxpcs(data, rois, mask=xpcs_mask, **kwargs)
 
-    t_start = time()
+        corf = out['corf']
+        t = corf[1:,0]
+        qv = corf[0,1:]
+        corf = corf[1:,1:]
+        if return_ == 'all':
+            return t, corf, qv
+        elif return_ == 'corf':
+            return corf
 
-    if isinstance(setup, str):
-        xana = Xana(detector='agipd1m', setupfile=setup)
-        xana.setup.make()
-
-    elif isinstance(setup, Xana.Setup):
-        pass
-
-    if mask is None:
-        mask = np.ones((16,512,128), "bool")
-
-    if verbose:
-        # run.info()
-        print(f"Calculating azimuthal intensity for {method} trains.")
-
-    local_client = False
-    if client is None:
-        cluster = SLURMCluster(
-            queue=partition,
-            processes=5, 
-            cores=25, 
-            memory='500GB',
-            log_directory='./dask_log/',
-            local_directory='./dask_tmp/',
-            nanny=True,
-            death_timeout=100,
-            walltime="24:00:00",
-        )
-
-        cluster.scale(50)
-        client = Client(cluster)
-        local_client = True
-
-    # define corners of quadrants. 
-    if quad_pos is None:
-        dx = -18
-        dy = -15
-        quad_pos = [(-500+dx, 650+dy),
-                  (-550+dx, -30+dy),
-                  (570+dx, -216+dy),
-                  (620+dx, 500+dy)] 
-
-    # generate the detector geometry
-    if geom is None:
-        geom = AGIPD_1MGeometry.from_quad_positions(quad_pos)
-
-    if isinstance(setup, Xana.Setup): 
-        ai = copy.copy(setup.ai)
-    else:
-        # update the azimuthal integrator
-        dist = geom.to_distortion_array()
-        xana.setup.detector.IS_CONTIGUOUS = False
-        xana.setup.detector.set_pixel_corners(dist)
-        xana.setup.update_ai()
-        ai = copy.copy(xana.setup.ai)
-
-
+    # getting the data
     agp = AGIPD1M(run, min_modules=16)
     # data = agp.get_dask_array('image.data')
     arr = agp.get_dask_array('image.data')
@@ -150,64 +103,39 @@ def correlation(run, method='average', partition="upex",
         arr = arr.where((mask_int.data <= 0) | (mask_int.data>=8))
         # mask[(mask_int.data > 0) & (mask_int.data<8)] = 0
 
-    if verbose:
-        print(f"masked {np.sum(mask==0)/np.sum(mask==1)*100:.2f}% of the pixels")
-
     arr = arr.where(mask[:,None,:,:])
+    arr = arr.unstack()
+
+    arr = arr.stack(pixels=('pulseId', 'module','dim_0', 'dim_1'))
     
     if last is not None:
-        arr = arr[:,:last]
+        arr = arr[:last]
 
-    if verbose:
-        print("Cluster dashboard link:", cluster.dashboard_link)
+    arr = arr.chunk({'trainId':100})
 
+    qmin, qmax, n = [q_range[x] for x in ['q_first', 'q_last', 'nsteps']]
+    qarr = np.linspace(qmin,qmax,n)
+    qr_tmp = qmap.reshape(16*512,128)
+    mask_2d = mask.reshape(16*512,128)
+    rois = [np.where((qr_tmp>qi) & (qr_tmp<qf) & mask_2d) for qi,qf in
+            zip(qarr[:-1],qarr[1:])]
 
     # do the actual calculation
-    if method == 'average':
-        avr_img = arr.mean('train_pulse', skipna=True).persist()
-        progress(avr_img)
-        # avr_img = avr_img.compute()
-
-        # aziumthal integration
-        q, I = integrate_azimuthally(avr_img)
-
-        img2d = geom.position_modules_fast(avr_img.data)[0]
-
-        savdict = {"soq":(q,I), "avr2d":img2d, "avr":avr_img}
-
-        if savname is None:
-            return savdict
-        else:
-            savname = f'./{savname}_Iq_{int(time())}.pkl'
-            pickle.dump(savdict, open(savname, 'wb'))
-
-    elif method == 'single':
-        arr = arr.stack(pixels=('module','dim_0','dim_1')).chunk({'train_pulse':1000})
-        q = integrate_azimuthally(arr[0])[0]
+    if method == 'per_train':
+        t, corf, qv = calculate_correlation(arr[0], rois, return_='all',
+                **kwargs)
 
         dim = arr.get_axis_num("pixels")
-        saxs_pulse_resolved = da.apply_along_axis(integrate_azimuthally, dim, \
-            arr.data, dtype='float32', shape=(500,), returnq=False)
-        saxs_arr = saxs_pulse_resolved.persist()
-        progress(saxs_arr)
+        out = da.apply_along_axis(calculate_correlation, dim, arr.data,
+            rois, dtype='float32', shape=corf.shape, return_='corf',
+            **kwargs)
+        out = out.persist()
+        progress(out)
 
-        savdict = {"q(nm-1)":q, "soq-pr":saxs_arr}
+        savdict = {"q(nm-1)":qv, "t(s)":t, "corf":out}
 
-        if savname is None:
-            return savdict
-        else:
-            savname = f'./{savname}_Iqpr_{int(time())}.pkl'
-            pickle.dump(savdict, open(savname, 'wb'))
+        return savdict
     else:
         raise(ValueError(f"Method {method} not understood. \
                         Choose between 'average' and 'single'."))
-
-    elapsed_time = time() - t_start
-    if local_client:
-        cluster.close()
-        client.close()
-    if verbose:
-        print(f"Finished: elapsed time: {elapsed_time/60:.2f}min")
-        print(f"Filename is {savname}")
-
     return
