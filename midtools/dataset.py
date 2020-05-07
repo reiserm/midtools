@@ -24,7 +24,7 @@ from dask.diagnostics import ProgressBar
 from Xana import Setup
 
 from .azimuthal_integration import azimuthal_integration
-from .correlations import correlation
+from .correlations import correlate
 
 class Dataset:
 
@@ -176,7 +176,9 @@ class Dataset:
                     'float32'],
             },
             'XPCS':{
-
+                "/train_resolved/correlation/q":[None,None],
+                "/train_resolved/correlation/t":[None,None],
+                "/train_resolved/correlation/g2":[None,None],
             },
         }
         return h5_structure
@@ -336,22 +338,23 @@ class Dataset:
     def _start_slurm_cluster(self):
         """Initialize the slurm cluster"""
 
-        nprocs = max([int(self.ntrains/200),4])
-        # print(f"Using {nprocs} processes to initialize SLRUMCluster")
+        nprocs = 8
+        njobs = max([int(self.ntrains/64),16])
+        print(f"Submitting {njobs} jobs to the Cluster")
         opt = self._slurm_opt
         self._cluster = SLURMCluster(
             queue=opt.get('partition','exfel'),
-            processes=8, 
+            processes=nprocs, 
             cores=72, 
             memory='512GB',
             log_directory='./dask_log/',
             local_directory='./dask_tmp/',
             nanny=True,
-            death_timeout=100,
+            # death_timeout=128,
             walltime="02:00:00",
         )
 
-        self._cluster.scale(8*16)
+        self._cluster.scale(nprocs*njobs)
         self._client = Client(self._cluster)
         print("Cluster dashboard link:", self._cluster.dashboard_link)
 
@@ -385,24 +388,30 @@ class Dataset:
         if create_file:
             self._create_output_file(filename)
 
+        clst_running  = False
         try:
             for i, (flag, method) in enumerate(zip(self.analysis, self.METHODS)):
                 if int(flag):
-                    if i == 2:
+                    if method not in ['META', 'DIAGNOSTICS'] and not clst_running:
                         self._start_slurm_cluster()
-                    print(f"Computing {method}")
+                        clst_running = True
+                    print(f"\n{method:-^50}")
                     getattr(self,
                             f"_compute_{method.lower()}")()
+                    print(f"{' Done ':-^50}")
 
         finally:
             if self._client is not None:
                 self._stop_slurm_cluster()
 
     def _compute_meta(self):
-        """Read metadata. """
+        """Find complete trains."""
+
+        all_trains = len(self.train_ids)
         self.train_ids, self.train_indices = self._get_good_trains(self.run)
         self.last_train_idx = min([self.last_train_idx,self.train_indices.size])
         self.ntrains = min([len(self.train_ids), self.last_train_idx])
+        print(f'{self.ntrains} of {all_trains} trains are complete.')
 
         # writing output to hdf5 file
         with h5.File(self.file_name, 'r+') as f:
@@ -417,9 +426,10 @@ class Dataset:
                 f[keyh5] = item
 
     def _compute_diagnostics(self):
-        """Read diagnostic data like XGM. """
+        """Read diagnostic data. """
         arr = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output', 'data.intensityTD')
         arr = arr[self.train_indices,:self.pulses_per_train]
+        print(f"Read XGM data.")
 
         # writing output to hdf5 file
         with h5.File(self.file_name, 'r+') as f:
@@ -477,17 +487,16 @@ class Dataset:
                 to_counts=False, 
                 apply_internal_mask=True, 
                 setup=self.setup,
-                client=self._client,
-                geom=self.agipd_geom, 
                 adu_per_photon=65, 
                 last=self.last_train_idx,
+                client=self._client,
+                npulses=self.pulses_per_train,
                 )
         xpcs_opt.update(self._xpcs_opt)
 
         # compute
         print('Compute XPCS correlation funcions.')
-        out = azimuthal_integration(self.run, 
-                method='average', **saxs_opt)
+        out = correlate(self.run, method='per_train', **xpcs_opt)
 
         # writing output to hdf5 file
         with h5.File(self.file_name, 'r+') as f:
