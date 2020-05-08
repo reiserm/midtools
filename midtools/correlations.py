@@ -78,7 +78,7 @@ def correlate(run, method='per_train', last=None, qmap=None,
         wnan = np.isnan(np.sum(data, axis=0))
         xpcs_mask = mask_2d | ~wnan.reshape(8192,128)
 
-        out = pyxpcs(data, rois, mask=xpcs_mask, **kwargs)
+        out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False, **kwargs)
 
         corf = out['corf']
         t = corf[1:,0]
