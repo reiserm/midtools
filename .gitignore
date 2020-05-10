@@ -9,3 +9,5 @@ dask_log
 dask_tmp
 testing
 *.swo
+*.dirlock
+*.lock

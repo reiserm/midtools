@@ -350,7 +350,7 @@ class Dataset:
             log_directory='./dask_log/',
             local_directory='./dask_tmp/',
             nanny=True,
-            death_timeout=60,
+            death_timeout=128,
             walltime="02:00:00",
         )
 
