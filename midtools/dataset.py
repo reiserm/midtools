@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+#!/home/reiserm/.conda/envs/mid/bin/python
+
+#/usr/bin/env python
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning) 
@@ -16,11 +18,14 @@ from extra_data import RunDirectory
 from extra_geom import AGIPD_1MGeometry
 
 # Dask
+import dask
+import dask_jobqueue
 import dask.array as da
 from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
+import Xana
 from Xana import Setup
 
 from .azimuthal_integration import azimuthal_integration
@@ -88,7 +93,7 @@ class Dataset:
         setup_pars = self._read_setup(setupfile)
 
         #: str: Flags of the analysis methods.
-        self.analysis = '11' + analysis
+        self.analysis = '00' + analysis
 
         #: str: Data directory
         self.datdir = setup_pars.pop('datdir', False)
@@ -117,6 +122,9 @@ class Dataset:
         #: int: Number of X-ray pulses per train.
         self.pulse_ids = self._get_pulse_ids(self.run)
 
+        #: float: Delay time between two successive pulses.
+        self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
+
         #: np.ndarray: Array of pulse IDs.
         self.pulses_per_train = len(self.pulse_ids)
 
@@ -140,7 +148,7 @@ class Dataset:
         dist = self.agipd_geom.to_distortion_array()
         self.setup.detector.IS_CONTIGUOUS = False
         self.setup.detector.set_pixel_corners(dist)
-        self.setup.update_ai()
+        self.setup._update_ai()
 
         qmap = self.setup.ai.array_from_unit(unit='q_nm^-1');
         #: np.ndarray: q-map
@@ -342,23 +350,24 @@ class Dataset:
     def _start_slurm_cluster(self):
         """Initialize the slurm cluster"""
 
-        nprocs = 8
+        nprocs = 16
         njobs = max([int(self.ntrains/64),16])
-        print(f"Submitting {njobs} jobs to the Cluster")
+        print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
         opt = self._slurm_opt
         self._cluster = SLURMCluster(
             queue=opt.get('partition','exfel'),
             processes=nprocs,
-            cores=72,
+            cores=nprocs*2,
             memory='512GB',
             log_directory='./dask_log/',
-            local_directory='./dask_tmp/',
-            nanny=True,
-            death_timeout=128,
+            local_directory='/scratch/',
+            #nanny=True,
+            #death_timeout=128,
             walltime="02:00:00",
         )
 
         self._cluster.scale(nprocs*njobs)
+        # self._cluster.adapt(minimum_jobs=njobs, maximum_jobs=20)
         self._client = Client(self._cluster)
         print("Cluster dashboard link:", self._cluster.dashboard_link)
 
@@ -403,6 +412,9 @@ class Dataset:
                     getattr(self,
                             f"_compute_{method.lower()}")()
                     print(f"{' Done ':-^50}")
+                    if clst_running:
+                        #self._client.restart()
+                        pass
 
         finally:
             if self._client is not None:
@@ -469,6 +481,9 @@ class Dataset:
                 f[keyh5] = item
         del out
 
+        # restart the client
+        # self._client.restart()
+
         # compute pulse resolved
         print('\nCompute pulse resolved SAXS')
         out = azimuthal_integration(self.run, 
@@ -495,6 +510,7 @@ class Dataset:
                 last=self.last_train_idx,
                 client=self._client,
                 npulses=self.pulses_per_train,
+                dt=self.pulse_delay,
                 )
         xpcs_opt.update(self._xpcs_opt)
 
@@ -510,6 +526,9 @@ class Dataset:
         del out
 
 def main():
+    print(Xana.__file__)
+    print(dask.__file__)
+    print(dask_jobqueue.__file__)
     t_start = time.time()
     args = list(sys.argv[1:])
 

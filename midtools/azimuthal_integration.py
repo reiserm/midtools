@@ -118,6 +118,7 @@ def azimuthal_integration(run, method='average', partition="upex",
 
     local_client = False
     if client is None:
+        print('start cluster from azimuthal integration')
         cluster = SLURMCluster(
             queue=partition,
             processes=5, 
@@ -187,7 +188,6 @@ def azimuthal_integration(run, method='average', partition="upex",
     if method == 'average':
         avr_img = arr.mean('train_pulse', skipna=True).persist()
         progress(avr_img)
-        # avr_img = avr_img.compute()
 
         # aziumthal integration
         q, I = integrate_azimuthally(avr_img)
@@ -203,7 +203,7 @@ def azimuthal_integration(run, method='average', partition="upex",
             pickle.dump(savdict, open(savname, 'wb'))
 
     elif method == 'single':
-        arr = arr.stack(pixels=('module','dim_0','dim_1')).chunk({'train_pulse':350})
+        arr = arr.stack(pixels=('module','dim_0','dim_1')).chunk({'train_pulse':128})
         q = integrate_azimuthally(arr[0])[0]
 
         dim = arr.get_axis_num("pixels")
