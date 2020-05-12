@@ -48,6 +48,9 @@ class Dataset:
                 |  01   | XPCS correlation functions |
                 +-------+----------------------------+
 
+            last_train (int, optional): Index of last train to analyze. If not provided, all
+                trains are processed.
+
         Note:
             A setupfile might look like this::
 
@@ -73,10 +76,11 @@ class Dataset:
                     q4: [ 620, 500]
 
                 # XPCS
-                q_range:
-                    q_first: .1 # smallest q in nm-1
-                    q_last: 1.  # largest q in nm-1
-                    steps: 10   # how many q-bins
+                xpcs_opt:
+                    q_range:
+                        q_first: .1 # smallest q in nm-1
+                        q_last: 1.  # largest q in nm-1
+                        steps: 10   # how many q-bins
         """
 
         #: str: Path to the setupfile.
@@ -344,8 +348,8 @@ class Dataset:
         opt = self._slurm_opt
         self._cluster = SLURMCluster(
             queue=opt.get('partition','exfel'),
-            processes=nprocs, 
-            cores=72, 
+            processes=nprocs,
+            cores=72,
             memory='512GB',
             log_directory='./dask_log/',
             local_directory='./dask_tmp/',
