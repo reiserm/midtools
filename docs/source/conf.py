@@ -39,7 +39,7 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinx_rtd_theme',
 #    'nbsphinx',
-    'm2r',
+    # 'm2r',
 #    'IPython.sphinxext.ipython_console_highlighting',
 ]
 
