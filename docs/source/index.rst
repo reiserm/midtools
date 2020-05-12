@@ -28,7 +28,7 @@ data and store the results in HDF5-files. Basic information are provided under
    :hidden:
    :caption: User Interface
 
-   cmd-interface
+   cmd-interface.rst
    api.rst
 
 
