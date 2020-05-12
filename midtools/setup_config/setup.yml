@@ -31,3 +31,4 @@ xpcs_opt:
       q_first: .1 # smallest q in nm-1
       q_last: .3  # largest q in nm-1
       nsteps: 10   # how many q-bins
+    norm: corrcoef

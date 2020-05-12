@@ -87,7 +87,7 @@ def correlate(run, method='per_train', last=None, qmap=None,
         if return_ == 'all':
             return t, corf, qv
         elif return_ == 'corf':
-            return corf
+            return corf.astype('float32')
 
     # getting the data
     agp = AGIPD1M(run, min_modules=16)
@@ -111,10 +111,11 @@ def correlate(run, method='per_train', last=None, qmap=None,
     if last is not None:
         arr = arr[:last]
 
-    arr = arr.chunk({'trainId':100})
+    arr = arr.chunk({'trainId':8})
 
     qmin, qmax, n = [q_range[x] for x in ['q_first', 'q_last', 'nsteps']]
     qarr = np.linspace(qmin,qmax,n)
+    qv = qarr + (qarr[1] - qarr[0])
     qr_tmp = qmap.reshape(16*512,128)
     mask_2d = mask.reshape(16*512,128)
     rois = [np.where((qr_tmp>qi) & (qr_tmp<qf) & mask_2d) for qi,qf in
@@ -122,8 +123,10 @@ def correlate(run, method='per_train', last=None, qmap=None,
 
     # do the actual calculation
     if method == 'per_train':
-        t, corf, qv = calculate_correlation(arr[0], rois, return_='all',
+        t, corf, _ = calculate_correlation(arr[0], rois, return_='all',
                 **kwargs)
+        savdict = {"q(nm-1)":qv, "t(s)":t, "corf":corf}
+        return savdict
 
         dim = arr.get_axis_num("pixels")
         out = da.apply_along_axis(calculate_correlation, dim, arr.data,
@@ -133,7 +136,6 @@ def correlate(run, method='per_train', last=None, qmap=None,
         progress(out)
 
         savdict = {"q(nm-1)":qv, "t(s)":t, "corf":out}
-
         return savdict
     else:
         raise(ValueError(f"Method {method} not understood. \
