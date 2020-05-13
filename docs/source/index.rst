@@ -28,14 +28,15 @@ data and store the results in HDF5-files. Basic information are provided under
    :hidden:
    :caption: User Interface
 
+   readme.rst
    cmd-interface.rst
    api.rst
 
 
+..
+    .. Indices and tables
+       ==================
 
-.. Indices and tables
-   ==================
-
-    * :ref:`genindex`
-    * :ref:`modindex`
-    * :ref:`search`
+        * :ref:`genindex`
+        * :ref:`modindex`
+        * :ref:`search`
