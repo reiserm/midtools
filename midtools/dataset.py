@@ -1,6 +1,4 @@
-#!/home/reiserm/.conda/envs/mid/bin/python
-
-#/usr/bin/env python
+#!/usr/bin/env python
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning) 
@@ -12,6 +10,7 @@ import sys
 import time
 import numpy as np
 import h5py as h5
+import argparse
 
 # XFEL packages
 from extra_data import RunDirectory
@@ -31,11 +30,16 @@ from Xana import Setup
 from .azimuthal_integration import azimuthal_integration
 from .correlations import correlate
 
+from functools import reduce
+
+import pdb
+
 class Dataset:
 
     METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS']
 
-    def __init__(self, setupfile, analysis='00', last_train=np.inf):
+    def __init__(self, setupfile, analysis='00', last_train=1e6,
+            run_number=None, pulses_per_train=500):
         """Dataset object to analyze MID datasets on Maxwell.
 
         Args:
@@ -55,6 +59,11 @@ class Dataset:
 
             last_train (int, optional): Index of last train to analyze. If not provided, all
                 trains are processed.
+            run_number (int, optional): Specify run number. Defaults to None.
+                If not defined, the datdir in the setupfile has to contain the
+                .h5 files.
+            pulses_per_train (int, optional): Specify the number of pulses per
+                train. If not provided, take all stored memory cells.
 
         Note:
             A setupfile might look like this::
@@ -93,11 +102,10 @@ class Dataset:
         setup_pars = self._read_setup(setupfile)
 
         #: str: Flags of the analysis methods.
-        self.analysis = '00' + analysis
-
-        #: str: Data directory
+        self.analysis = '11' + analysis
+        
+        self.run_number = run_number
         self.datdir = setup_pars.pop('datdir', False)
-        self.run_number = self.datdir
 
         #: DataCollection: e.g., returned from extra_data.RunDirectory
         self.run = RunDirectory(self.datdir)
@@ -120,13 +128,14 @@ class Dataset:
         self.__dict__.update(setup_pars)
 
         #: int: Number of X-ray pulses per train.
-        self.pulse_ids = self._get_pulse_ids(self.run)
+        self.pulse_ids = self._get_pulse_ids()
+
+        #: np.ndarray: Array of pulse IDs.
+        self.pulses_per_train = min([len(self.pulse_ids), pulses_per_train])
+        self.pulse_ids = self.pulse_ids[:self.pulses_per_train]
 
         #: float: Delay time between two successive pulses.
         self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
-
-        #: np.ndarray: Array of pulse IDs.
-        self.pulses_per_train = len(self.pulse_ids)
 
         #: np.ndarray: All train IDs.
         self.train_ids = np.array(self.run.train_ids)
@@ -218,7 +227,14 @@ class Dataset:
                     + f"/{path['datatype']}" \
                     + f"/r{path['run']:04d}"
         elif isinstance(path, str):
-            pass
+            if bool(re.search("r\d{4}",path)):
+                self.run_number = path
+            elif isinstance(self.run_number, int):
+                path += f"/r{self.run_number:04d}"
+            else:
+                raise ValueError("Could not determine run number. Specify run \
+                        number with --run argument or pass data directory \
+                        with run folder (e.g., r0123.)")
         else:
             raise ValueError(f'Invalid data directory: {path}')
 
@@ -259,8 +275,10 @@ class Dataset:
             if len(number):
                 number = int(number[0])
             else:
-                number = 0
+                number = None
         elif isinstance(number, int):
+            pass
+        elif number is None:
             pass
         else:
             raise TypeError(f'Invalid run number {type(number)}.')
@@ -328,24 +346,37 @@ class Dataset:
                 Second array contains the corresponding indices.
         """
 
-        mod_train_ids = run.get_dataframe(fields=[('*/DET/*', 'trailer.trainId')])
-        corrupted_trains = mod_train_ids[mod_train_ids.isna().sum(1)>0].index.values
-        good_indices = np.where(np.sum(np.isnan(mod_train_ids,), axis=1)==0)[0]
+        "Stolen from Robert Rosca"
+        trains_with_images = {}
+        det_sources = filter(lambda x: 'AGIPD1M' in x, run.detector_sources)
+        for source_name in det_sources:
+            good_trains_source = set()
+            for source_file in run._source_index[source_name]:
+                good_trains_source.update(
+                        set(source_file.train_ids[source_file.get_index(source_name,'image')[1].nonzero()])
+                )
 
-        mod_train_ids.reset_index(level=0, inplace=True)
-        mod_train_ids.rename(columns={"index": "train_id"}, inplace=True)
-        tmp = mod_train_ids.dropna(axis=0)
-        good_trains = tmp['train_id']
+            trains_with_images[source_name] = good_trains_source
+
+        good_trains = sorted(reduce(set.intersection,list(trains_with_images.values())))
+        good_trains = np.array(good_trains)
+        good_indices = np.intersect1d(run.train_ids, good_trains, return_indices=True)[1]
 
         return good_trains, good_indices
 
-    @staticmethod
-    def _get_pulse_ids(run):
+    def _get_pulse_ids(self, train_idx=0):
         source = f'MID_DET_AGIPD1M-1/DET/{0}CH0:xtdf'
-        # pulses_per_train = run.get_data_counts(source, 'image.data').iloc[:10].max()
-        tid, train_data = run.select(source, 'image.pulseId').train_from_index(0)
-        pulse_ids = np.array(train_data[source]['image.pulseId'])
-        return pulse_ids
+        i = 0
+        while i < 10:
+            try:
+                tid, train_data = self.run.select(source,'image.pulseId').train_from_index(train_idx)
+                pulse_ids = np.array(train_data[source]['image.pulseId'])
+                return pulse_ids
+            except KeyError:
+                i += 1
+                train_idx += 1
+        return np.arange(self.pulses_per_train)
+
 
     def _start_slurm_cluster(self):
         """Initialize the slurm cluster"""
@@ -357,13 +388,14 @@ class Dataset:
         self._cluster = SLURMCluster(
             queue=opt.get('partition','exfel'),
             processes=nprocs,
-            cores=nprocs*2,
+            cores=nprocs*4,
             memory='512GB',
             log_directory='./dask_log/',
             local_directory='/scratch/',
             #nanny=True,
             #death_timeout=128,
             walltime="02:00:00",
+            interface='ib0',
         )
 
         self._cluster.scale(nprocs*njobs)
@@ -426,7 +458,9 @@ class Dataset:
         all_trains = len(self.train_ids)
         self.train_ids, self.train_indices = self._get_good_trains(self.run)
         self.last_train_idx = min([self.last_train_idx,self.train_indices.size])
-        self.ntrains = min([len(self.train_ids), self.last_train_idx])
+        self.ntrains = min([self.train_ids.size, self.last_train_idx])
+        self.train_ids = self.train_ids[:self.ntrains]
+        self.train_indices = self.train_indices[:self.ntrains]
         print(f'{self.ntrains} of {all_trains} trains are complete.')
 
         # writing output to hdf5 file
@@ -465,7 +499,8 @@ class Dataset:
                 client=self._client,
                 geom=self.agipd_geom, 
                 adu_per_photon=65, 
-                last=self.last_train_idx*self.pulses_per_train,
+                npulses=self.pulses_per_train,
+                last=self.ntrains,
                 )
         saxs_opt.update(self._saxs_opt)
 
@@ -507,12 +542,14 @@ class Dataset:
                 apply_internal_mask=True, 
                 setup=self.setup,
                 adu_per_photon=65, 
-                last=self.last_train_idx,
+                last=self.ntrains,
                 client=self._client,
                 npulses=self.pulses_per_train,
                 dt=self.pulse_delay,
                 )
         xpcs_opt.update(self._xpcs_opt)
+
+        # pdb.set_trace()
 
         # compute
         print('Compute XPCS correlation funcions.')
@@ -525,24 +562,63 @@ class Dataset:
                 f[keyh5] = item
         del out
 
+def _get_parser():
+    """Command line parser
+    """
+    parser = argparse.ArgumentParser(
+        prog='midtools',
+        description='Analyze MID runs.',
+    )
+    parser.add_argument(
+            'setupfile',
+            type=str,
+            help='the setup.yml file to configure midtools',
+            )
+    parser.add_argument(
+            'analysis',
+            type=str,
+            help='which analysis to perform. List of 0 and 1',
+            )
+    parser.add_argument(
+            '-r',
+            '--run',
+            nargs='?',
+            type=int,
+            help='Run number.',
+            const=None,
+            )
+    parser.add_argument(
+            '--last',
+            type=int,
+            nargs='?',
+            help='last train to analyze.',
+            const=1e6,
+            )
+    parser.add_argument(
+            '-ppt',
+            '--pulses_per_train',
+            type=int,
+            nargs='?',
+            help='number of pulses per train',
+            const=500,
+            )
+    return parser
+
 def main():
-    print(Xana.__file__)
-    print(dask.__file__)
-    print(dask_jobqueue.__file__)
+
+    # get the command line arguments
+    parser = _get_parser()
+    args = parser.parse_args()
+
     t_start = time.time()
-    args = list(sys.argv[1:])
 
-    setupfile = args[0]
-    analysis = ''
-    last_train = np.inf
-    if len(args) > 1:
-        analysis = args[1]
-    if len(args) > 2:
-        last_train = int(args[2])
-        print(f"Analyzing first {last_train} trains.")
-
-    data = Dataset(setupfile, analysis, last_train)
-    print("Analyzing ", data.datdir)
+    data = Dataset(args.setupfile,
+                   args.analysis, 
+                   args.last,
+                   args.run,
+                   args.pulses_per_train,
+                   )
+    print(f"Analyzing {data.ntrains} trains of {data.datdir}")
     data.compute()
     
     print(f"Found {data.train_indices.size} complete trains")

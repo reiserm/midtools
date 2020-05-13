@@ -65,7 +65,7 @@ def correlate(run, method='per_train', last=None, qmap=None,
             * 'corf': the xpcs correlation function
     """
 
-    def calculate_correlation(data, rois, return_='all',  **kwargs):
+    def calculate_correlation(data, return_='all',  **kwargs):
         # Check data type
         if isinstance(data, np.ndarray):
             pass
@@ -76,7 +76,10 @@ def correlate(run, method='per_train', last=None, qmap=None,
         
         data = data.reshape(npulses,8192,128)
         wnan = np.isnan(np.sum(data, axis=0))
-        xpcs_mask = mask_2d | ~wnan.reshape(8192,128)
+        xpcs_mask = mask_2d & ~wnan.reshape(8192,128)
+
+        rois = [np.where((qr_tmp>qi) & (qr_tmp<qf) & xpcs_mask) for qi,qf in
+            zip(qarr[:-1],qarr[1:])]
 
         out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False, **kwargs)
 
@@ -104,33 +107,27 @@ def correlate(run, method='per_train', last=None, qmap=None,
         # mask[(mask_int.data > 0) & (mask_int.data<8)] = 0
 
     arr = arr.where(mask[:,None,:,:])
+
     arr = arr.unstack()
-
+    arr = arr.transpose('trainId', 'pulseId', 'module', 'dim_0', 'dim_1')
+    arr = arr[:last,:npulses]
     arr = arr.stack(pixels=('pulseId', 'module','dim_0', 'dim_1'))
-    
-    if last is not None:
-        arr = arr[:last]
-
     arr = arr.chunk({'trainId':8})
 
     qmin, qmax, n = [q_range[x] for x in ['q_first', 'q_last', 'nsteps']]
     qarr = np.linspace(qmin,qmax,n)
-    qv = qarr + (qarr[1] - qarr[0])
+    qv = qarr + (qarr[1] - qarr[0])/2.
     qr_tmp = qmap.reshape(16*512,128)
     mask_2d = mask.reshape(16*512,128)
-    rois = [np.where((qr_tmp>qi) & (qr_tmp<qf) & mask_2d) for qi,qf in
-            zip(qarr[:-1],qarr[1:])]
 
     # do the actual calculation
     if method == 'per_train':
-        t, corf, _ = calculate_correlation(arr[0], rois, return_='all',
+        t, corf, _ = calculate_correlation(arr[0], return_='all',
                 **kwargs)
-        savdict = {"q(nm-1)":qv, "t(s)":t, "corf":corf}
-        return savdict
 
         dim = arr.get_axis_num("pixels")
         out = da.apply_along_axis(calculate_correlation, dim, arr.data,
-            rois, dtype='float32', shape=corf.shape, return_='corf',
+            dtype='float32', shape=corf.shape, return_='corf',
             **kwargs)
         out = out.persist()
         progress(out)

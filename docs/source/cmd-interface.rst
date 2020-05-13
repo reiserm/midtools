@@ -18,3 +18,8 @@ A third argument is optionally setting the maximum number of trains to analyze::
    >>> midtools /path/to/setupfile/setup.yml 01 100
 
 This would analyze the first 100 trains.
+
+.. argparse::
+   :module: midtools.dataset
+    :func: _get_parser
+    :prog: midtools
