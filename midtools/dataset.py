@@ -572,35 +572,36 @@ def _get_parser():
     parser.add_argument(
             'setupfile',
             type=str,
-            help='the setup.yml file to configure midtools',
+            help='the YAML file to configure midtools',
             )
     parser.add_argument(
             'analysis',
             type=str,
-            help='which analysis to perform. List of 0 and 1',
+            help='which analysis to perform. List of 0s and 1s:\n \
+                  10 runs SAXS routines,\n \
+                  01 runs XPCS routines,\n \
+                  11 runs both SAXS and XPCS routines.',
             )
     parser.add_argument(
             '-r',
             '--run',
-            nargs='?',
             type=int,
             help='Run number.',
-            const=None,
+            default=None,
             )
     parser.add_argument(
             '--last',
             type=int,
-            nargs='?',
             help='last train to analyze.',
-            const=1e6,
+            default=1_000_000,
             )
     parser.add_argument(
             '-ppt',
             '--pulses_per_train',
+            metavar='npulses',
             type=int,
-            nargs='?',
             help='number of pulses per train',
-            const=500,
+            default=500,
             )
     return parser
 

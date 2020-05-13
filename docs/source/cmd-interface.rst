@@ -1,7 +1,8 @@
 Command Line Interface
 ======================
 
-After installation, **midtools** can be run from the command line:
+After installation, **midtools** can be run from the command line. This is a 
+summary of the parser arguments:
 
 .. argparse::
    :module: midtools.dataset
@@ -21,12 +22,13 @@ analysis should be performed. See :ref:`the_dataset_class` for more details on
 the arguments and their purpose.
 
 .. warning:: The **run number** has to be specified in the setupfile by
-             kgiving the full path to the data including the run folder
+             giving the full path to the data including the run folder
              */path/r0123*. The run directory can be ommited if the
-             --run argument is passed on the command line.
+             run argument is passed on the command line.
 
 If the run directory is not included in the setupfile, it has to be specified.
-For example, this would analyze the first 1000 trains of run 123::
+For example, this would analyze the first 1000 trains of run 123 and run SAXS
+and XPCS routines::
 
    >>> midtools /path/to/setupfile/setup.yml 11 --last 1000 --run 123
 
