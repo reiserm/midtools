@@ -1,7 +1,8 @@
 # setup.yml file
 
 # data
-datdir: /gpfs/exfel/exp/MID/202001/p002458/scratch/example_data/r0522
+datdir: /gpfs/exfel/exp/MID/201931/p900090/scratch/proc/r0522
+#  /gpfs/exfel/exp/MID/202001/p002458/scratch/example_data/r0522
 #  cycle: 202001
 #  proposal: 2458
 #  datatype: proc # or raw
@@ -31,4 +32,4 @@ xpcs_opt:
       q_first: .1 # smallest q in nm-1
       q_last: .3  # largest q in nm-1
       nsteps: 10   # how many q-bins
-    norm: corrcoef
+    norm: none

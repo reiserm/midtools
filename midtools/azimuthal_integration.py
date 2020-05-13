@@ -6,10 +6,6 @@ import pickle
 import xarray
 import copy
 
-# main analysis software can be installed by: pip install Xana
-from Xana import Xana
-import Xana.Setup
-
 # reading AGIPD data provided by XFEL
 from extra_data import RunDirectory, stack_detector_data, open_run
 from extra_geom import AGIPD_1MGeometry
@@ -21,9 +17,10 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
+import pdb
 
 def azimuthal_integration(run, method='average', partition="upex",
-        quad_pos=None, verbose=False, last=None,
+        quad_pos=None, verbose=False, last=None, npulses=None,
 	mask=None, to_counts=False, apply_internal_mask=True, setup=None,
     client=None, geom=None, savname=None, adu_per_photon=65, **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
@@ -55,9 +52,7 @@ def azimuthal_integration(run, method='average', partition="upex",
         apply_internal_mask (bool, optional): Read and apply the mask calculated
             from the calibration pipeline. Defaults to True.
 
-        setup ((str.Xana.Setup), optional): Xana setupfile. Defaults to None.
-            If str, include path in the filename. Otherwise provide Xana Setup
-            instance.
+        setup (Xana.Setup, optional): Xana setup. Defaults to None.
 
         geom (geometry, optional):
 
@@ -84,7 +79,7 @@ def azimuthal_integration(run, method='average', partition="upex",
         if isinstance(data, np.ndarray):
             pass
         elif isinstance(data, xarray.DataArray):
-            data = data.data
+            data = np.array(data.data)
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
 
@@ -102,62 +97,8 @@ def azimuthal_integration(run, method='average', partition="upex",
 
     t_start = time()
 
-    if isinstance(setup, str):
-        xana = Xana(detector='agipd1m', setupfile=setup)
-        xana.setup.make()
-
-    elif isinstance(setup, Xana.Setup):
-        pass
-
-    if mask is None:
-        mask = np.ones((16,512,128), "bool")
-
-    if verbose:
-        # run.info()
-        print(f"Calculating azimuthal intensity for {method} trains.")
-
-    local_client = False
-    if client is None:
-        print('start cluster from azimuthal integration')
-        cluster = SLURMCluster(
-            queue=partition,
-            processes=5, 
-            cores=25, 
-            memory='500GB',
-            log_directory='./dask_log/',
-            local_directory='./dask_tmp/',
-            nanny=True,
-            death_timeout=100,
-            walltime="24:00:00",
-        )
-
-        cluster.scale(50)
-        client = Client(cluster)
-        local_client = True
-
-    # define corners of quadrants. 
-    if quad_pos is None:
-        dx = -18
-        dy = -15
-        quad_pos = [(-500+dx, 650+dy),
-                  (-550+dx, -30+dy),
-                  (570+dx, -216+dy),
-                  (620+dx, 500+dy)] 
-
-    # generate the detector geometry
-    if geom is None:
-        geom = AGIPD_1MGeometry.from_quad_positions(quad_pos)
-
-    if isinstance(setup, Xana.Setup): 
-        ai = copy.copy(setup.ai)
-    else:
-        # update the azimuthal integrator
-        dist = geom.to_distortion_array()
-        xana.setup.detector.IS_CONTIGUOUS = False
-        xana.setup.detector.set_pixel_corners(dist)
-        xana.setup.update_ai()
-        ai = copy.copy(xana.setup.ai)
-
+    # get the azimuthal integrator
+    ai = copy.copy(setup.ai)
 
     agp = AGIPD1M(run, min_modules=16)
     # data = agp.get_dask_array('image.data')
@@ -172,17 +113,14 @@ def azimuthal_integration(run, method='average', partition="upex",
         arr = arr.where((mask_int.data <= 0) | (mask_int.data>=8))
         # mask[(mask_int.data > 0) & (mask_int.data<8)] = 0
 
-    if verbose:
-        print(f"masked {np.sum(mask==0)/np.sum(mask==1)*100:.2f}% of the pixels")
-
     arr = arr.where(mask[:,None,:,:])
     
-    if last is not None:
-        arr = arr[:,:last]
-
-    if verbose:
-        print("Cluster dashboard link:", cluster.dashboard_link)
-
+    arr = arr.unstack()
+    arr = arr.transpose('trainId', 'pulseId', 'module', 'dim_0', 'dim_1')
+    arr = arr[:last,:npulses]
+    arr = arr.stack(train_pulse=('trainId', 'pulseId'))
+    arr = arr.transpose('train_pulse',...)
+    arr = arr.chunk({'train_pulse':128*8, 'module':16})
 
     # do the actual calculation
     if method == 'average':
@@ -203,7 +141,8 @@ def azimuthal_integration(run, method='average', partition="upex",
             pickle.dump(savdict, open(savname, 'wb'))
 
     elif method == 'single':
-        arr = arr.stack(pixels=('module','dim_0','dim_1')).chunk({'train_pulse':128})
+        arr = arr.stack(pixels=('module','dim_0','dim_1'))  
+        arr = arr.transpose('train_pulse', 'pixels')
         q = integrate_azimuthally(arr[0])[0]
 
         dim = arr.get_axis_num("pixels")
