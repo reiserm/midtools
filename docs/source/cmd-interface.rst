@@ -1,4 +1,3 @@
-
 Command Line Interface
 ======================
 
@@ -21,5 +20,5 @@ This would analyze the first 100 trains.
 
 .. argparse::
    :module: midtools.dataset
-    :func: _get_parser
-    :prog: midtools
+   :func: _get_parser
+   :prog: midtools
