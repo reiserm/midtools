@@ -28,13 +28,17 @@ The structure of the HDF5-file is shown in the following table. :code:`npulses` 
 :code:`nx, ny` are the pixel in `x`- and `y`-direction, respectively.
 
 .. csv-table:: results.h5-structure
-        :header: "Path", "Type", "Content"
+        :header: "Path", "Dimensions", "Content"
         :widths: 30, 5, 30
 
-        "average/azimuthal_intensity", "array(2,nq)", "averaged I(q), first column q, second I"
-        "average/image_2d", "array(ny,nx)", "average 2D image of the entire run"
-        "identifiers/train_ids", "array(ntrains)", "train_ids of full trains"
-        "identifiers/train_indices", "array(ntrains)", "train_indices of full trains"
-        "pulse_resolved/azimuthal_intensity/I", "array(npulses x ntrains,nq)", "I(q) for each pulse" 
-        "pulse_resolved/azimuthal_intensity/q", "array(nq)", "q-values"
-        "pulse_resolved/xgm/energy", "array(ntrains,npulses)", "XGM energy in micro Joule" 
+        "average/azimuthal_intensity", "(2,nq)", "averaged I(q), first column q, second I"
+        "average/image_2d", "(ny,nx)", "average 2D image of the entire run"
+        "identifiers/train_ids", "(ntrains)", "train_ids of full trains"
+        "identifiers/train_indices", "(ntrains)", "train_indices of full trains"
+        "pulse_resolved/azimuthal_intensity/I", "(npulses x ntrains,nq)", "I(q) for each pulse" 
+        "pulse_resolved/azimuthal_intensity/q", "(nq)", "q-values"
+        "pulse_resolved/xgm/energy", "(ntrains,npulses)", "XGM energy in micro Joule" 
+        "train_resolved/correlation/q", "(nq)", "XPCS q-bins"
+        "train_resolved/correlation/t", "(ntimes)", "XPCS delay times"
+        "train_resolved/correlation/g2", "(ntrains,ntimes,nq)", "XPCS correlation functions"
+
