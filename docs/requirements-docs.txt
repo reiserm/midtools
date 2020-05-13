@@ -7,3 +7,4 @@ extra_geom
 dask[complete]
 dask-jobqueue
 Xana
+sphinx-argparse
