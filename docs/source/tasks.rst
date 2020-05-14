@@ -64,6 +64,7 @@ This brings us to the `3. Homework`_:
 * Characterize the measurements and search for an effect of the varied focal
   size.
 * Prepare your results in maximum 4 figures for a breakout session on Tuesday.
+* Think about additional data you need in the HDF5-file for our beamtime.
 
 As always, use Slack if you need more information or have questions.
 
