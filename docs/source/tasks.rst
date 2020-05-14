@@ -44,6 +44,7 @@ corresponding delay time values, and the values of the q-bins are saved.
 
 .. note:: Another convenient way of exploring the HDF5 file is to use the 
           :code:`hdfview` program on Maxwell.
+
           * Use a shell on Maxwell, e.g., by using FastX.
           * run :code:`module load xray` this will make hdfview available.
           * run :code:`hdfview file-name` to open an HDF5 file.
@@ -57,9 +58,9 @@ The data have been measured with a Vycor sample varying the position of our
 nanofocus lenses; therefore, the beam size on the sample should vary between 
 the measurements.
 
-This brings us to the :ref:`3. Homework`:
+This brings us to the `3. Homework`_:
 
-* Check the new files and load the data as in the :ref:`2. Homework`.
+* Check the new files and load the data as in the `2. Homework`_.
 * Characterize the measurements and search for an effect of the varied focal
   size.
 * Prepare your results in maximum 4 figures for a breakout session on Tuesday.
