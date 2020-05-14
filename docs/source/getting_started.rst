@@ -1,3 +1,5 @@
+.. _locations:
+
 Locations
 =========
 
@@ -5,6 +7,7 @@ Locations
   ::
 
         /gpfs/exfel/exp/MID/202001/p002458/
+
 * We are going to use the `scratch` folder for data anlysis during the experinemt and its preparation:
   You can create your own subfolder in this directory to work on data analysis.
   ::
@@ -18,6 +21,8 @@ Locations
         /gpfs/exfel/exp/MID/202001/p002458/scratch/datasets/
 
 
+.. _hdf5_structure:
+
 Structure of the HDF5-File
 ==========================
 
@@ -26,6 +31,7 @@ We will only consider `full` trains, i.e., trains where all 16 AGIPD modules hav
 
 The structure of the HDF5-file is shown in the following table. :code:`npulses` is the number of pulses per train and :code:`ntrains` is the number of trains. :code:`nq` is the number of q-values. 
 :code:`nx, ny` are the pixel in `x`- and `y`-direction, respectively.
+:code:`ntimes` is the number of delay times of the correlation function.
 
 .. csv-table:: results.h5-structure
         :header: "Path", "Dimensions", "Content"

@@ -33,3 +33,36 @@ Try to accomplish the following tasks:
 * Open the file and display the different datasets.
 
 * Calculate the position of the peak in I(q) as a function of the incident X-ray pulse energy.
+
+
+3. Homework
+-----------
+
+The :ref:`hdf5_structure` has changed. A new group has been added containing
+the XPCS data. More precisely, the train resolved correlation functions, the 
+corresponding delay time values, and the values of the q-bins are saved. 
+
+.. note:: Another convenient way of exploring the HDF5 file is to use the 
+          :code:`hdfview` program on Maxwell.
+          * Use a shell on Maxwell, e.g., by using FastX.
+          * run :code:`module load xray` this will make hdfview available.
+          * run :code:`hdfview file-name` to open an HDF5 file.
+
+I have processed a set of runs and saved the results in the 
+datasets folder (see :ref:`locations`). To make sure that the results are 
+not overwritten, a random number is added to the file name. It does not have 
+any meaning.
+
+The data have been measured with a Vycor sample varying the position of our 
+nanofocus lenses; therefore, the beam size on the sample should vary between 
+the measurements.
+
+This brings us to the :ref:`3. Homework`:
+
+* Check the new files and load the data as in the :ref:`2. Homework`.
+* Characterize the measurements and search for an effect of the varied focal
+  size.
+* Prepare your results in maximum 4 figures for a breakout session on Tuesday.
+
+As always, use Slack if you need more information or have questions.
+
