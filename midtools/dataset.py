@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import warnings
-warnings.filterwarnings("ignore", category=FutureWarning) 
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 import os
 import yaml
@@ -11,6 +11,7 @@ import time
 import numpy as np
 import h5py as h5
 import argparse
+from shutil import copyfile
 
 # XFEL packages
 from extra_data import RunDirectory
@@ -103,7 +104,7 @@ class Dataset:
 
         #: str: Flags of the analysis methods.
         self.analysis = '11' + analysis
-        
+
         self.run_number = run_number
         self.datdir = setup_pars.pop('datdir', False)
 
@@ -119,11 +120,11 @@ class Dataset:
 
         #: dict: options for the Slurm cluster
         self._slurm_opt = setup_pars.pop('slurm_opt', {})
-        #: dict: options for the SAXS algorithm 
+        #: dict: options for the SAXS algorithm
         self._saxs_opt = setup_pars.pop('saxs_opt', {})
-        #: dict: options for the XPCS algorithm 
+        #: dict: options for the XPCS algorithm
         self._xpcs_opt = setup_pars.pop('xpcs_opt', {})
-        
+
         # save the other entries as attributes
         self.__dict__.update(setup_pars)
 
@@ -415,7 +416,13 @@ class Dataset:
         if filename is None:
             filename = f"./r{self.run_number:04}-analysis.h5"
 
-        filename = filename.replace(".h5","") +"_"+ str(int(time.time())) + ".h5"
+        identifier = str(int(time.time()))
+        filename = filename.replace(".h5","") +"_"+ identifier + ".h5"
+
+        # copy the setupfile
+        new_setupfile  = f"./r{self.run_number:04}-setup_{identifier}.yml"
+        copyfile(self.setupfile, new_setupfile)
+        self.setupfile = new_setupfile
 
         self.file_name = os.path.abspath(filename)
 
@@ -457,11 +464,12 @@ class Dataset:
 
         all_trains = len(self.train_ids)
         self.train_ids, self.train_indices = self._get_good_trains(self.run)
+        print(f'{self.train_ids.size} of {all_trains} trains are complete.')
         self.last_train_idx = min([self.last_train_idx,self.train_indices.size])
         self.ntrains = min([self.train_ids.size, self.last_train_idx])
         self.train_ids = self.train_ids[:self.ntrains]
         self.train_indices = self.train_indices[:self.ntrains]
-        print(f'{self.ntrains} of {all_trains} trains are complete.')
+        print(f'{self.ntrains} of {all_trains} trains will be processed.')
 
         # writing output to hdf5 file
         with h5.File(self.file_name, 'r+') as f:
@@ -491,14 +499,14 @@ class Dataset:
         """Perform the azimhuthal integration."""
 
         # specify SAXS options
-        saxs_opt = dict( 
-	            mask=self.mask, 
-                to_counts=False, 
-                apply_internal_mask=True, 
+        saxs_opt = dict(
+	            mask=self.mask,
+                to_counts=False,
+                apply_internal_mask=True,
                 setup=self.setup,
                 client=self._client,
-                geom=self.agipd_geom, 
-                adu_per_photon=65, 
+                geom=self.agipd_geom,
+                adu_per_photon=65,
                 npulses=self.pulses_per_train,
                 last=self.ntrains,
                 )
@@ -506,7 +514,7 @@ class Dataset:
 
         # compute average
         print('Compute average SAXS')
-        out = azimuthal_integration(self.run, 
+        out = azimuthal_integration(self.run,
                 method='average', **saxs_opt)
 
         # writing output to hdf5 file
@@ -521,7 +529,7 @@ class Dataset:
 
         # compute pulse resolved
         print('\nCompute pulse resolved SAXS')
-        out = azimuthal_integration(self.run, 
+        out = azimuthal_integration(self.run,
                 method='single', **saxs_opt)
 
         # writing output to hdf5 file
@@ -535,21 +543,19 @@ class Dataset:
         """Calculate correlation functions."""
 
         # specify XPCS options
-        xpcs_opt = dict( 
-	            mask=self.mask, 
+        xpcs_opt = dict(
+	            mask=self.mask,
                 qmap = self.qmap,
-                to_counts=False, 
-                apply_internal_mask=True, 
+                to_counts=False,
+                apply_internal_mask=True,
                 setup=self.setup,
-                adu_per_photon=65, 
+                adu_per_photon=65,
                 last=self.ntrains,
                 client=self._client,
                 npulses=self.pulses_per_train,
                 dt=self.pulse_delay,
                 )
         xpcs_opt.update(self._xpcs_opt)
-
-        # pdb.set_trace()
 
         # compute
         print('Compute XPCS correlation funcions.')
@@ -614,14 +620,14 @@ def main():
     t_start = time.time()
 
     data = Dataset(args.setupfile,
-                   args.analysis, 
+                   args.analysis,
                    args.last,
                    args.run,
                    args.pulses_per_train,
                    )
     print(f"Analyzing {data.ntrains} trains of {data.datdir}")
     data.compute()
-    
+
     print(f"Found {data.train_indices.size} complete trains")
     elapsed_time = time.time() - t_start
     print(f"Finished: elapsed time: {elapsed_time/60:.2f}min")

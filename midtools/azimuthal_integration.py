@@ -20,7 +20,7 @@ from dask.diagnostics import ProgressBar
 import pdb
 
 def azimuthal_integration(run, method='average', partition="upex",
-        quad_pos=None, verbose=False, last=None, npulses=None,
+        quad_pos=None, verbose=False, last=None, npulses=None, first_pulse=1,
 	mask=None, to_counts=False, apply_internal_mask=True, setup=None,
     client=None, geom=None, savname=None, adu_per_photon=65, **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
@@ -117,7 +117,8 @@ def azimuthal_integration(run, method='average', partition="upex",
     
     arr = arr.unstack()
     arr = arr.transpose('trainId', 'pulseId', 'module', 'dim_0', 'dim_1')
-    arr = arr[:last,:npulses]
+    # select pulses and skip the first one 
+    arr = arr[:last,first_pulse:npulses]
     arr = arr.stack(train_pulse=('trainId', 'pulseId'))
     arr = arr.transpose('train_pulse',...)
     arr = arr.chunk({'train_pulse':128*8, 'module':16})

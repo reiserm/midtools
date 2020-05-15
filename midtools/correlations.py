@@ -24,8 +24,8 @@ from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
 
-def correlate(run, method='per_train', last=None, qmap=None,
-	mask=None,  npulses=None, to_counts=False, apply_internal_mask=True, 
+def correlate(run, method='per_train', last=None, qmap=None, first_pulse=1,
+	mask=None,  npulses=None, to_counts=False, apply_internal_mask=True,
     setup=None, adu_per_photon=65, q_range=None, client=None,  **kwargs):
     """Calculate XPCS correlation functions of a run using dask.
 
@@ -54,7 +54,7 @@ def correlate(run, method='per_train', last=None, qmap=None,
 
         client (dask.distributed.Client): Defaults to None.
 
-        qrange (dict): Information on the q-bins. Should contain the keys: 
+        qrange (dict): Information on the q-bins. Should contain the keys:
             * q_first
             * q_last
             * nsteps
@@ -73,19 +73,22 @@ def correlate(run, method='per_train', last=None, qmap=None,
             data = np.array(data.data)
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
-        
+
         data = data.reshape(npulses,8192,128)
         wnan = np.isnan(np.sum(data, axis=0))
         xpcs_mask = mask_2d & ~wnan.reshape(8192,128)
 
-        rois = [np.where((qr_tmp>qi) & (qr_tmp<qf) & xpcs_mask) for qi,qf in
+        rois = [np.where((qmap_2d>qi) & (qmap_2d<qf) & xpcs_mask) for qi,qf in
             zip(qarr[:-1],qarr[1:])]
 
-        out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False, **kwargs)
+        # get only the q-bins in range
+        qv = qarr[:len(rois)] + (qarr[1] - qarr[0])/2.
+
+        out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False,
+                **kwargs)
 
         corf = out['corf']
         t = corf[1:,0]
-        qv = corf[0,1:]
         corf = corf[1:,1:]
         if return_ == 'all':
             return t, corf, qv
@@ -110,19 +113,23 @@ def correlate(run, method='per_train', last=None, qmap=None,
 
     arr = arr.unstack()
     arr = arr.transpose('trainId', 'pulseId', 'module', 'dim_0', 'dim_1')
-    arr = arr[:last,:npulses]
+
+    # select pulses and skip the first one
+    arr = arr[:last,first_pulse:npulses]
+    # update the number of pulses
+    npulses = arr.shape[1]
+
     arr = arr.stack(pixels=('pulseId', 'module','dim_0', 'dim_1'))
     arr = arr.chunk({'trainId':8})
 
     qmin, qmax, n = [q_range[x] for x in ['q_first', 'q_last', 'nsteps']]
     qarr = np.linspace(qmin,qmax,n)
-    qv = qarr + (qarr[1] - qarr[0])/2.
-    qr_tmp = qmap.reshape(16*512,128)
+    qmap_2d = qmap.reshape(16*512,128)
     mask_2d = mask.reshape(16*512,128)
 
     # do the actual calculation
     if method == 'per_train':
-        t, corf, _ = calculate_correlation(arr[0], return_='all',
+        t, corf, qv = calculate_correlation(arr[0], return_='all',
                 **kwargs)
 
         dim = arr.get_axis_num("pixels")
