@@ -1,0 +1,15 @@
+Run number (900090),LOTZ motor position,Sample,Transmission (SA2_XTD1_ATT1),# of bunches,Pulse energy,Remarks
+518,32mm,No,0.04%,10,0.8mJ,background measurement without NAFO
+519,32mm,No,0.04%,100,0.4mJ,background measurement without NAFO
+520,32mm,No,0.04%,100,0.5mJ,background measurement with NAFO
+521,32mm,Vycor,0.016%,100,0.5mJ,Start sample measurement
+522,32mm,Vycor,0.02%,100,0.4mJ,
+523,34mm,Vycor,0.02%,100,0.5mJ,
+524,36mm,Vycor,0.02%,100,0.5mJ,
+525,38mm,Vycor,0.02%,100,0.5mJ,
+526,37mm,Vycor,0.02%,100,0.4mJ,
+527,35mm,Vycor,0.02%,100,0.4mJ,
+528,35.5mm,Vycor,0.02%,100,0.4mJ,
+529,35.25mm,Vycor,0.02%,100,0.8mJ,Might be Focal point!!!
+530,30mm,Vycor,0.02%,100,0.7mJ,
+531,40.5mm,Vycor,0.02%,100,0.8mJ,
