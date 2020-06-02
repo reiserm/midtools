@@ -79,10 +79,9 @@ This makes it more transparent how the data were processed, e.g., which mask
 was used, etc.
 
 You can now find some `Metadata`_ information in the section below.
-:code:`lotz` is the position of the nanofocus lenses along the beam direction.
+:code:`LOTZ` is the position of the nanofocus lenses along the beam direction.
 
 If you find the time, try to accompish the following tasks of `4. Homework`_:
-
 * As before, analyze the data and compare the datasets with the Vycor
   measurements.
 * Compare the dynamics of the 50nm and 20nm Silica particles.
