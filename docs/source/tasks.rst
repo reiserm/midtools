@@ -117,5 +117,5 @@ Metadata information on the example datasets.
 .. _silica_datasets:
 
 .. csv-table:: Silica Datasets
-      :file: lotz-positions.csv
+      :file: lotz-positions-silica.csv
       :header-rows: 1
