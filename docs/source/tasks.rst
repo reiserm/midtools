@@ -102,6 +102,10 @@ If you find the time, try to accompish the following tasks of `4. Homework`_:
 Metadata
 ========
 
+.. csv-table:: Caption of the table
+      :file: lotz-positions.csv
+      :header-rows: 1
+
 .. literalinclude:: lotz-positions.html
     :linenos:
     :language: html
