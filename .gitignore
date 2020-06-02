@@ -11,3 +11,5 @@ testing
 *.swo
 *.dirlock
 *.lock
+*.pdf
+*.png

@@ -24,7 +24,7 @@ from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
 
-def correlate(run, method='per_train', last=None, qmap=None, first_pulse=1,
+def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
 	mask=None,  npulses=None, to_counts=False, apply_internal_mask=True,
     setup=None, adu_per_photon=65, q_range=None, client=None,  **kwargs):
     """Calculate XPCS correlation functions of a run using dask.
@@ -115,9 +115,7 @@ def correlate(run, method='per_train', last=None, qmap=None, first_pulse=1,
     arr = arr.transpose('trainId', 'pulseId', 'module', 'dim_0', 'dim_1')
 
     # select pulses and skip the first one
-    arr = arr[:last,first_pulse:npulses]
-    # update the number of pulses
-    npulses = arr.shape[1]
+    arr = arr[:last,first_cell:npulses+first_cell]
 
     arr = arr.stack(pixels=('pulseId', 'module','dim_0', 'dim_1'))
     arr = arr.chunk({'trainId':8})

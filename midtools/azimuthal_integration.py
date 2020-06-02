@@ -20,7 +20,7 @@ from dask.diagnostics import ProgressBar
 import pdb
 
 def azimuthal_integration(run, method='average', partition="upex",
-        quad_pos=None, verbose=False, last=None, npulses=None, first_pulse=1,
+        quad_pos=None, verbose=False, last=None, npulses=None, first_cell=1,
 	mask=None, to_counts=False, apply_internal_mask=True, setup=None,
     client=None, geom=None, savname=None, adu_per_photon=65, **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
@@ -114,11 +114,13 @@ def azimuthal_integration(run, method='average', partition="upex",
         # mask[(mask_int.data > 0) & (mask_int.data<8)] = 0
 
     arr = arr.where(mask[:,None,:,:])
-    
+
     arr = arr.unstack()
     arr = arr.transpose('trainId', 'pulseId', 'module', 'dim_0', 'dim_1')
-    # select pulses and skip the first one 
-    arr = arr[:last,first_pulse:npulses]
+
+    # select pulses and skip the first one
+    arr = arr[:last,first_cell:npulses+first_cell]
+
     arr = arr.stack(train_pulse=('trainId', 'pulseId'))
     arr = arr.transpose('train_pulse',...)
     arr = arr.chunk({'train_pulse':128*8, 'module':16})
@@ -142,7 +144,7 @@ def azimuthal_integration(run, method='average', partition="upex",
             pickle.dump(savdict, open(savname, 'wb'))
 
     elif method == 'single':
-        arr = arr.stack(pixels=('module','dim_0','dim_1'))  
+        arr = arr.stack(pixels=('module','dim_0','dim_1'))
         arr = arr.transpose('train_pulse', 'pixels')
         q = integrate_azimuthally(arr[0])[0]
 

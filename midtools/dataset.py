@@ -116,7 +116,7 @@ class Dataset:
         #: tuple: Position of the direct beam in pixels
         self.center = None
 
-        self.agipd_geom = setup_pars.pop('quadrant_positions', False)
+        self.agipd_geom = setup_pars.pop('geometry', False)
 
         #: dict: options for the Slurm cluster
         self._slurm_opt = setup_pars.pop('slurm_opt', {})
@@ -300,11 +300,17 @@ class Dataset:
         with open(setupfile) as file:
             setup_pars = yaml.load(file, Loader=yaml.FullLoader)
 
-            # make
-            quad_dict = setup_pars['quadrant_positions']
-            dx, dy = [quad_dict[x] for x in ['dx', 'dy']]
-            quad_pos = [(dx+quad_dict[f"q{x}"][0], dy+quad_dict[f"q{x}"][1]) for x in range(1,5)]
-            setup_pars['quadrant_positions'] = quad_pos
+            # include dx and dy in quadrant position
+            if 'quadrant_positions' in setup_pars.keys():
+                quad_dict = setup_pars['quadrant_positions']
+                dx, dy = [quad_dict[x] for x in ['dx', 'dy']]
+                quad_pos = [(dx+quad_dict[f"q{x}"][0],
+                             dy+quad_dict[f"q{x}"][1]) for x in range(1,5)]
+                if 'geometry' not in setup_pars.keys():
+                    setup_pars['geometry'] = quad_pos
+                else:
+                    print('Quadrant positions and geometry file defined by \
+                            setupfile. Loading geometry file...')
             return setup_pars
 
     @property
@@ -366,36 +372,40 @@ class Dataset:
         return good_trains, good_indices
 
     def _get_pulse_ids(self, train_idx=0):
-        source = f'MID_DET_AGIPD1M-1/DET/{0}CH0:xtdf'
+        source = 'MID_DET_AGIPD1M-1/DET/{}CH0:xtdf'
         i = 0
         while i < 10:
-            try:
-                tid, train_data = self.run.select(source,'image.pulseId').train_from_index(train_idx)
-                pulse_ids = np.array(train_data[source]['image.pulseId'])
-                return pulse_ids
-            except KeyError:
-                i += 1
-                train_idx += 1
-        return np.arange(self.pulses_per_train)
-
+            for module in range(16):
+                try:
+                    s = source.format(module)
+                    tid, train_data = self.run.select(s,
+                            'image.pulseId').train_from_index(train_idx)
+                    pulse_ids = np.array(train_data[s]['image.pulseId'])
+                    return pulse_ids
+                except KeyError:
+                    pass
+            i += 1
+            train_idx += 1
+        raise ValueError("Unable to determine pulse ids. Probably the data \
+                source was not available.")
 
     def _start_slurm_cluster(self):
         """Initialize the slurm cluster"""
 
-        nprocs = 16
-        njobs = max([int(self.ntrains/64),16])
-        print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
         opt = self._slurm_opt
+        nprocs = opt.pop('nprocs', 16)
+        njobs = opt.pop('njobs',max([int(self.ntrains/64),4]))
+        print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
         self._cluster = SLURMCluster(
-            queue=opt.get('partition','exfel'),
+            queue=opt.get('partition',opt.pop('partition', 'exfel')),
             processes=nprocs,
             cores=nprocs*4,
             memory='512GB',
             log_directory='./dask_log/',
             local_directory='/scratch/',
-            #nanny=True,
-            #death_timeout=128,
-            walltime="02:00:00",
+            nanny=True,
+            death_timeout=64,
+            walltime="01:00:00",
             interface='ib0',
         )
 
@@ -500,7 +510,7 @@ class Dataset:
 
         # specify SAXS options
         saxs_opt = dict(
-	            mask=self.mask,
+	        mask=self.mask,
                 to_counts=False,
                 apply_internal_mask=True,
                 setup=self.setup,
