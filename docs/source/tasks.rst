@@ -72,8 +72,8 @@ As always, use Slack if you need more information or have questions.
 4. Homework
 -----------
 
-You find new datasets in our :code:`scratch` folder. You find runs measured
-with 50nm and 20nm (diameter) Silica spheres in water. In addition to the
+You find new datasets in our :code:`scratch` folder: measurements of
+50nm and 20nm (diameter) Silica spheres in water. In addition to the
 processed data, I copied the setup-files that were used for the calculation.
 This makes it more transparent how the data were processed, e.g., which mask
 was used, etc.
