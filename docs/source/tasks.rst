@@ -72,21 +72,24 @@ As always, use Slack if you need more information or have questions.
 4. Homework
 -----------
 
-You find new datasets in our :code:`scratch` folder. To organize the files a
-bit better, I created supdirectories for new samples. You find runs measured
+You find new datasets in our :code:`scratch` folder. You find runs measured
 with 50nm and 20nm (diameter) Silica spheres in water. In addition to the
-processed data, I copied the setup-file that was used for the calculation.
+processed data, I copied the setup-files that were used for the calculation.
 This makes it more transparent how the data were processed, e.g., which mask
 was used, etc.
+
+You can now find some `Metadata`_ information in the section below.
+:code:`lotz` is the position of the nanofocus lenses along the beam direction.
 
 If you find the time, try to accompish the following tasks of `4. Homework`_:
 
 * As before, analyze the data and compare the datasets with the Vycor
   measurements.
 * Compare the dynamics of the 50nm and 20nm Silica particles.
-* Prepare your results in maximum 4 figures for a breakout session of the next
-  meeting.
-* Make a table of the effects that you see and if you expected a result or not:
+* Prepare your results in maximum 4 figures for breakout sessions during the
+  next meeting.
+* Create a table of your observations and whether or not they fit your
+  expectations:
 
     +------------+------------+
     | expected   | unexpected |
@@ -102,14 +105,17 @@ If you find the time, try to accompish the following tasks of `4. Homework`_:
 Metadata
 ========
 
-.. csv-table:: Caption of the table
+Metadata information on the example datasets.
+
+.. _vycor_datasets:
+
+.. csv-table:: Vycor Datasets
       :file: lotz-positions.csv
       :header-rows: 1
 
-.. literalinclude:: lotz-positions.html
-    :linenos:
-    :language: html
 
-.. literalinclude:: lotz-positions-silica.html
-    :linenos:
-    :language: html
+.. _silica_datasets:
+
+.. csv-table:: Silica Datasets
+      :file: lotz-positions.csv
+      :header-rows: 1
