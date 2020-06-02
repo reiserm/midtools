@@ -9,7 +9,7 @@ Stay healthy.
 2. Homework
 -----------
 
-The aim of the second *homework* is to familiarize yourself with working on the maxwell cluster. 
+The aim of the second *homework* is to familiarize yourself with working on the maxwell cluster.
 We will also try to establish `Slack` for communication in the data team so please post questions there.
 
 Try to accomplish the following tasks:
@@ -39,23 +39,23 @@ Try to accomplish the following tasks:
 -----------
 
 The :ref:`hdf5_structure` has changed. A new group has been added containing
-the XPCS data. More precisely, the train resolved correlation functions, the 
-corresponding delay time values, and the values of the q-bins are saved. 
+the XPCS data. More precisely, the train resolved correlation functions, the
+corresponding delay time values, and the values of the q-bins are saved.
 
-.. note:: Another convenient way of exploring the HDF5 file is to use the 
+.. note:: Another convenient way of exploring the HDF5 file is to use the
           :code:`hdfview` program on Maxwell.
 
           * Use a shell on Maxwell, e.g., by using FastX.
           * run :code:`module load xray` this will make hdfview available.
           * run :code:`hdfview file-name` to open an HDF5 file.
 
-I have processed a set of runs and saved the results in the 
-datasets folder (see :ref:`locations`). To make sure that the results are 
-not overwritten, a random number is added to the file name. It does not have 
+I have processed a set of runs and saved the results in the
+datasets folder (see :ref:`locations`). To make sure that the results are
+not overwritten, a random number is added to the file name. It does not have
 any meaning.
 
-The data have been measured with a Vycor sample varying the position of our 
-nanofocus lenses; therefore, the beam size on the sample should vary between 
+The data have been measured with a Vycor sample varying the position of our
+nanofocus lenses; therefore, the beam size on the sample should vary between
 the measurements.
 
 This brings us to the `3. Homework`_:
@@ -68,3 +68,44 @@ This brings us to the `3. Homework`_:
 
 As always, use Slack if you need more information or have questions.
 
+
+4. Homework
+-----------
+
+You find new datasets in our :code:`scratch` folder. To organize the files a
+bit better, I created supdirectories for new samples. You find runs measured
+with 50nm and 20nm (diameter) Silica spheres in water. In addition to the
+processed data, I copied the setup-file that was used for the calculation.
+This makes it more transparent how the data were processed, e.g., which mask
+was used, etc.
+
+If you find the time, try to accompish the following tasks of `4. Homework`_:
+
+* As before, analyze the data and compare the datasets with the Vycor
+  measurements.
+* Compare the dynamics of the 50nm and 20nm Silica particles.
+* Prepare your results in maximum 4 figures for a breakout session of the next
+  meeting.
+* Make a table of the effects that you see and if you expected a result or not:
+
+    +------------+------------+
+    | expected   | unexpected |
+    +============+============+
+    | result 1   | result 2   |
+    +------------+------------+
+    | result 3   | result 4   |
+    +------------+------------+
+    | ...        | ...        |
+    +------------+------------+
+
+
+Metadata
+========
+
+.. literalinclude:: lotz-positions.html
+    :linenos:
+    :language: html
+
+.. literalinclude:: lotz-positions-silica.html
+    :linenos:
+    :language: html
