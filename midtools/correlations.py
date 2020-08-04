@@ -25,8 +25,9 @@ from dask.diagnostics import ProgressBar
 
 
 def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
-	mask=None,  npulses=None, to_counts=False, apply_internal_mask=True,
-    setup=None, adu_per_photon=65, q_range=None, client=None,  **kwargs):
+	mask=None,  npulses=None, to_counts=False, apply_internal_mask=False,
+    setup=None, adu_per_photon=65, q_range=None, client=None, save_ttc=False,
+    **kwargs):
     """Calculate XPCS correlation functions of a run using dask.
 
     Args:
@@ -90,15 +91,26 @@ def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
         corf = out['corf']
         t = corf[1:,0]
         corf = corf[1:,1:]
+        # ttc = out['twotime_corf'][0]
         if return_ == 'all':
             return t, corf, qv
         elif return_ == 'corf':
             return corf.astype('float32')
+        elif return_ == 'ttc':
+            pass
 
     # getting the data
     agp = AGIPD1M(run, min_modules=16)
-    # data = agp.get_dask_array('image.data')
     arr = agp.get_dask_array('image.data')
+    print("Got dask array", flush=True)
+
+    # coords are module, dim_0, dim_1, trainId, pulseId after unstack
+    arr = arr.unstack()
+
+    # select pulses and skip the first one
+    arr = arr[..., :last, first_cell:npulses+first_cell]
+    npulses = arr.shape[-1]
+
     if to_counts:
         arr.data = np.floor((arr.data + 0.5*adu_per_photon) / adu_per_photon)
         arr.data[arr.data<0] = 0
@@ -106,19 +118,13 @@ def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
 
     if apply_internal_mask:
         mask_int = agp.get_dask_array('image.mask')
+        mask_int = mask_int.unstack()
+        mask_int = mask_int[..., :last, first_cell:npulses+first_cell]
         arr = arr.where((mask_int.data <= 0) | (mask_int.data>=8))
         # mask[(mask_int.data > 0) & (mask_int.data<8)] = 0
 
-    arr = arr.where(mask[:,None,:,:])
-
-    arr = arr.unstack()
-    arr = arr.transpose('trainId', 'pulseId', 'module', 'dim_0', 'dim_1')
-
-    # select pulses and skip the first one
-    arr = arr[:last,first_cell:npulses+first_cell]
-
-    arr = arr.stack(pixels=('pulseId', 'module','dim_0', 'dim_1'))
-    arr = arr.chunk({'trainId':8})
+    arr = arr.stack(train_data=('pulseId', 'module', 'dim_0', 'dim_1'))
+    arr = arr.chunk({'trainId': 1, 'train_data': 128*512*128})
 
     qmin, qmax, n = [q_range[x] for x in ['q_first', 'q_last', 'nsteps']]
     qarr = np.linspace(qmin,qmax,n)
@@ -130,14 +136,14 @@ def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
         t, corf, qv = calculate_correlation(arr[0], return_='all',
                 **kwargs)
 
-        dim = arr.get_axis_num("pixels")
+        dim = arr.get_axis_num("train_data")
         out = da.apply_along_axis(calculate_correlation, dim, arr.data,
-            dtype='float32', shape=corf.shape, return_='corf',
-            **kwargs)
-        out = out.persist()
+            dtype='float32', shape=corf.shape, return_='corf', **kwargs)
+        out = client.persist(out)
         progress(out)
 
-        savdict = {"q(nm-1)":qv, "t(s)":t, "corf":out}
+        savdict = {"q(nm-1)":qv, "t(s)":t, "corf":np.array(out)}
+        del out
         return savdict
     else:
         raise(ValueError(f"Method {method} not understood. \

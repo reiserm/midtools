@@ -46,9 +46,10 @@ class Dataset:
         Args:
             setupfile (str): Setupfile (.yml) that contains information on the
                 setup parameters.
-            analysis (str, optional): Flags of the analysis to perform. Defaults to '00'.
-                analysis is a string of ones and zeros where a one means to perform the analysis
-                and a zero means to omit the analysis. The analysis types are:
+            analysis (str, optional): Flags of the analysis to perform.
+                Defaults to '00'. `analysis` is a string of ones and zeros
+                where a one means to perform the analysis and a zero means to
+                omit the analysis. The analysis types are:
 
                 +-------+----------------------------+
                 | flags | analysis                   |
@@ -58,8 +59,8 @@ class Dataset:
                 |  01   | XPCS correlation functions |
                 +-------+----------------------------+
 
-            last_train (int, optional): Index of last train to analyze. If not provided, all
-                trains are processed.
+            last_train (int, optional): Index of last train to analyze. If not
+                provided, all trains are processed.
             run_number (int, optional): Specify run number. Defaults to None.
                 If not defined, the datdir in the setupfile has to contain the
                 .h5 files.
@@ -72,10 +73,10 @@ class Dataset:
                 # setup.yml file
 
                 # Data
-                datdir: /gpfs/exfel/exp/MID/202001/p002458/scratch/example_data/r0522
+                datdir: /path/to/data/r0522
 
                 # Maskfile
-                mask: /gpfs/exfel/exp/MID/202001/p002458/scratch/midtools/agipd_mask_tmp.npy
+                mask: /path/to/mask/agipd_mask_tmp.npy
 
                 # Beamline
                 photon_energy: 9 # keV
@@ -180,24 +181,26 @@ class Dataset:
         """Create the HDF5 data structure.
         """
         h5_structure = {
-            'META':{
+           'META': {
                 "/identifiers/pulses_per_train":[(1,),'int8'],
                 "/identifiers/pulse_ids":[(self.pulses_per_train,), 'int8'],
                 "/identifiers/train_ids":[(self.ntrains,), 'int16'],
                 "/identifiers/train_indices":[(self.ntrains,), 'int8'],
             },
-            'DIAGNOSTICS':{
-                "/pulse_resolved/xgm/energy":[(self.ntrains,self.pulses_per_train),'float32'],
+            'DIAGNOSTICS': {
+                "/pulse_resolved/xgm/energy": [
+                    (self.ntrains,self.pulses_per_train), 'float32', ],
             },
-            'SAXS':{
+            'SAXS': {
                 "/average/azimuthal_intensity":[(2,500),'float32'],
                 "/average/image_2d":[None, 'float32'],
                 "/average/image":[(16,512,128), 'float32'],
+                "/pulse_resolved/frames": [(1000, 1000), 'float32',],
                 "/pulse_resolved/azimuthal_intensity/q":[(500,), 'float32'],
-                "/pulse_resolved/azimuthal_intensity/I":[(self.ntrains*self.pulses_per_train,500),
-                    'float32'],
+                "/pulse_resolved/azimuthal_intensity/I":[
+                    (self.ntrains*self.pulses_per_train,500),'float32',],
             },
-            'XPCS':{
+            'XPCS': {
                 "/train_resolved/correlation/q":[None,None],
                 "/train_resolved/correlation/t":[None,None],
                 "/train_resolved/correlation/g2":[None,None],
@@ -360,14 +363,18 @@ class Dataset:
             good_trains_source = set()
             for source_file in run._source_index[source_name]:
                 good_trains_source.update(
-                        set(source_file.train_ids[source_file.get_index(source_name,'image')[1].nonzero()])
+                        set(source_file.train_ids[source_file.get_index(
+                            source_name,'image')[1].nonzero()]
+                            )
                 )
 
             trains_with_images[source_name] = good_trains_source
 
-        good_trains = sorted(reduce(set.intersection,list(trains_with_images.values())))
+        good_trains = sorted(reduce(set.intersection,
+                                    list(trains_with_images.values())))
         good_trains = np.array(good_trains)
-        good_indices = np.intersect1d(run.train_ids, good_trains, return_indices=True)[1]
+        good_indices = np.intersect1d(run.train_ids, good_trains,
+                                      return_indices=True)[1]
 
         return good_trains, good_indices
 
@@ -393,24 +400,26 @@ class Dataset:
         """Initialize the slurm cluster"""
 
         opt = self._slurm_opt
-        nprocs = opt.pop('nprocs', 16)
-        njobs = opt.pop('njobs',max([int(self.ntrains/64),4]))
+        nprocs = opt.pop('nprocs', 4)
+        threads_per_process = 6
+        nprocs = 72//threads_per_process
+        njobs = opt.pop('njobs', min(max(int(self.ntrains/64), 4), 12))
         print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
         self._cluster = SLURMCluster(
             queue=opt.get('partition',opt.pop('partition', 'exfel')),
             processes=nprocs,
-            cores=nprocs*4,
-            memory='512GB',
+            cores=nprocs,  # *threads_per_process,
+            memory='768GB',
             log_directory='./dask_log/',
             local_directory='/scratch/',
             nanny=True,
-            death_timeout=64,
+            death_timeout=3600,
             walltime="01:00:00",
             interface='ib0',
         )
 
         self._cluster.scale(nprocs*njobs)
-        # self._cluster.adapt(minimum_jobs=njobs, maximum_jobs=20)
+        print(self._cluster)
         self._client = Client(self._cluster)
         print("Cluster dashboard link:", self._cluster.dashboard_link)
 
@@ -461,10 +470,10 @@ class Dataset:
                     getattr(self,
                             f"_compute_{method.lower()}")()
                     print(f"{' Done ':-^50}")
+                    # pdb.set_trace()
                     if clst_running:
-                        #self._client.restart()
+                        self._client.restart()
                         pass
-
         finally:
             if self._client is not None:
                 self._stop_slurm_cluster()
@@ -512,7 +521,7 @@ class Dataset:
         saxs_opt = dict(
 	        mask=self.mask,
                 to_counts=False,
-                apply_internal_mask=True,
+                apply_internal_mask=False,
                 setup=self.setup,
                 client=self._client,
                 geom=self.agipd_geom,
@@ -529,13 +538,13 @@ class Dataset:
 
         # writing output to hdf5 file
         with h5.File(self.file_name, 'r+') as f:
-            keys = list(self.h5_structure['SAXS'].keys())[:3]
-            for keyh5,item in zip(keys,out.values()):
+            keys = list(self.h5_structure['SAXS'].keys())[:4]
+            for keyh5, item in zip(keys, out.values()):
                 f[keyh5] = item
         del out
 
         # restart the client
-        # self._client.restart()
+        self._client.restart()
 
         # compute pulse resolved
         print('\nCompute pulse resolved SAXS')
@@ -544,7 +553,7 @@ class Dataset:
 
         # writing output to hdf5 file
         with h5.File(self.file_name, 'r+') as f:
-            keys = list(self.h5_structure['SAXS'].keys())[3:]
+            keys = list(self.h5_structure['SAXS'].keys())[4:]
             for keyh5,item in zip(keys,out.values()):
                 f[keyh5] = item
         del out
@@ -554,16 +563,18 @@ class Dataset:
 
         # specify XPCS options
         xpcs_opt = dict(
-	            mask=self.mask,
+	        mask=self.mask,
                 qmap = self.qmap,
                 to_counts=False,
-                apply_internal_mask=True,
+                apply_internal_mask=False,
                 setup=self.setup,
                 adu_per_photon=65,
                 last=self.ntrains,
                 client=self._client,
                 npulses=self.pulses_per_train,
                 dt=self.pulse_delay,
+                use_multitau=False,
+                rebin_g2=False,
                 )
         xpcs_opt.update(self._xpcs_opt)
 
@@ -577,6 +588,7 @@ class Dataset:
             for keyh5,item in zip(keys,out.values()):
                 f[keyh5] = item
         del out
+
 
 def _get_parser():
     """Command line parser
@@ -635,6 +647,7 @@ def main():
                    args.run,
                    args.pulses_per_train,
                    )
+    print(f"\n{' Starting Analysis ':-^50}")
     print(f"Analyzing {data.ntrains} trains of {data.datdir}")
     data.compute()
 
