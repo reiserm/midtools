@@ -44,6 +44,12 @@ setup(
             'midtools = midtools.dataset:main',
         ],
     },
+    extras_require={
+        "test": [
+            "pytest",
+            "pytest-cov",
+        ],
+    },
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Science/Research',
