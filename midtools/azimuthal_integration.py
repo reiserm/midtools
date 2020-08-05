@@ -133,7 +133,7 @@ def azimuthal_integration(run, method='average', partition="upex",
     print("Start computation", flush=True)
     if method == 'average':
         # store some single frames
-        frames = np.array(arr[::npulses//20*5])
+        frames = np.array(arr[::int(np.ceil(arr.shape[-1]/10))])
         frames = frames.reshape(-1, 16, 512, 128)
 
         arr = arr.chunk({'train_pulse': 128, 'module': 1})

@@ -428,18 +428,22 @@ class Dataset:
         self._client.close()
         self._cluster.close()
 
-    def _create_output_file(self, filename=None):
+    def _create_output_file(self):
         """Create the HDF5 output file.
         """
 
-        if filename is None:
-            filename = f"./r{self.run_number:04}-analysis.h5"
+        # check existing files and determine counter
+        existing = os.listdir('./')
+        counter = map(re.compile(f"(?<=r{self.run_number:04}-analysis_)"
+                              ".*\d{3,}(?=\.h5)").search, existing)
+        counter = filter(lambda x: bool(x), counter)
+        counter = list(map(lambda x: int(x[0]), counter))
 
-        identifier = str(int(time.time()))
-        filename = filename.replace(".h5","") +"_"+ identifier + ".h5"
+        identifier = max(counter) + 1 if len(counter) else 0
+        filename = f"./r{self.run_number:04}-analysis_{identifier:03}.h5"
 
         # copy the setupfile
-        new_setupfile  = f"./r{self.run_number:04}-setup_{identifier}.yml"
+        new_setupfile  = f"./r{self.run_number:04}-setup_{identifier:03}.yml"
         copyfile(self.setupfile, new_setupfile)
         self.setupfile = new_setupfile
 
@@ -452,12 +456,12 @@ class Dataset:
                         pass
                         # f.create_dataset(path, shape=shape, dtype=dtype)
 
-    def compute(self, filename=None, create_file=True):
+    def compute(self, create_file=True):
         """Start the actual computation based on the analysis attribute.
         """
 
         if create_file:
-            self._create_output_file(filename)
+            self._create_output_file()
 
         clst_running  = False
         try:
