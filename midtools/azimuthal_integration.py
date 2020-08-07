@@ -17,11 +17,13 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
+from .corrections import commonmode_series, commonmode_frame
+
 import pdb
 
 def azimuthal_integration(run, method='average', partition="upex",
-        quad_pos=None, verbose=False, last=None, npulses=None, first_cell=1,
-	mask=None, to_counts=False, apply_internal_mask=False, setup=None,
+    quad_pos=None, verbose=False, last=None, npulses=None, first_cell=1,
+    mask=None, to_counts=False, apply_internal_mask=False, setup=None,
     client=None, geom=None, savname=None, adu_per_photon=65, **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
@@ -127,18 +129,27 @@ def azimuthal_integration(run, method='average', partition="upex",
         arr = arr.where((mask_int.data <= 0) | (mask_int.data>=8))
         # mask[(mask_int.data > 0) & (mask_int.data<8)] = 0
 
-    arr = arr.stack(train_pulse=('trainId', 'pulseId'))
-    arr = arr.transpose('train_pulse', ...)
+    arr = arr.stack(train_pulse=('trainId', 'pulseId'),
+                    pixels=('module', 'dim_0', 'dim_1'))
+    arr = arr.transpose('train_pulse', 'pixels')
+    print(arr)
+
+    # apply common mode correction
+    dim = arr.get_axis_num("pixels")
+    arr = da.apply_along_axis(commonmode_frame, dim, arr.data)
 
     print("Start computation", flush=True)
     if method == 'average':
         # store some single frames
-        frames = np.array(arr[::int(np.ceil(arr.shape[0]/10))])
+        last_train_pulse = min(npulses*100, arr.shape[0])
+        frames = np.array(arr[:last_train_pulse:npulses*10])
         frames = frames.reshape(-1, 16, 512, 128)
 
-        arr = arr.chunk({'train_pulse': 128, 'module': 1})
+        arr = arr.chunk({'train_pulse': 8, 'pixels': 16*512*128})
         arr = client.persist(arr.mean('train_pulse', skipna=True))
         progress(arr)
+
+        arr = arr.reshape(-1, 16, 512, 128)
 
         # aziumthal integration
         q, I = integrate_azimuthally(arr)
