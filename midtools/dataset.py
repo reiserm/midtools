@@ -532,6 +532,7 @@ class Dataset:
                 adu_per_photon=65,
                 npulses=self.pulses_per_train,
                 last=self.ntrains,
+                max_trains=200,
                 )
         saxs_opt.update(self._saxs_opt)
 
@@ -579,6 +580,7 @@ class Dataset:
                 dt=self.pulse_delay,
                 use_multitau=False,
                 rebin_g2=False,
+                h5filename=self.file_name,
                 )
         xpcs_opt.update(self._xpcs_opt)
 

@@ -5,6 +5,7 @@ import scipy.integrate as integrate
 from time import time
 import pickle
 import xarray
+import h5py
 import copy
 
 # main analysis software can be installed by: pip install Xana
@@ -27,7 +28,7 @@ from dask.diagnostics import ProgressBar
 def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
 	mask=None,  npulses=None, to_counts=False, apply_internal_mask=False,
     setup=None, adu_per_photon=65, q_range=None, client=None, save_ttc=False,
-    **kwargs):
+    h5filename=None, norm_xgm=False, **kwargs):
     """Calculate XPCS correlation functions of a run using dask.
 
     Args:
@@ -110,6 +111,14 @@ def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
     # select pulses and skip the first one
     arr = arr[..., :last, first_cell:npulses+first_cell]
     npulses = arr.shape[-1]
+
+    if norm_xgm:
+        with h5py.File(h5filename, 'r') as f:
+            xgm = f["pulse_resolved/xgm/energy"][:]
+        xgm = xgm[:last, :npulses]
+        xgm = xgm / xgm.mean(1)[:, None]
+        print(f"Read XGM data from {h5filename} for normalization")
+        arr = arr / xgm[None, None, None, ...]
 
     if to_counts:
         arr.data = np.floor((arr.data + 0.5*adu_per_photon) / adu_per_photon)
