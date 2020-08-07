@@ -651,6 +651,7 @@ def main():
                    args.run,
                    args.pulses_per_train,
                    )
+    print("Development Mode")
     print(f"\n{' Starting Analysis ':-^50}")
     print(f"Analyzing {data.ntrains} trains of {data.datdir}")
     data.compute()
