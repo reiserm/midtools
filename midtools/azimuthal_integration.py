@@ -20,9 +20,10 @@ from dask.diagnostics import ProgressBar
 import pdb
 
 def azimuthal_integration(run, method='average', partition="upex",
-        quad_pos=None, verbose=False, last=None, npulses=None, first_cell=1,
-	mask=None, to_counts=False, apply_internal_mask=False, setup=None,
-    client=None, geom=None, savname=None, adu_per_photon=65, **kwargs):
+    quad_pos=None, verbose=False, last=None, npulses=None, first_cell=1,
+    mask=None, to_counts=False, apply_internal_mask=False, setup=None,
+    client=None, geom=None, savname=None, adu_per_photon=65,
+    max_trains=10_000, **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
@@ -108,11 +109,15 @@ def azimuthal_integration(run, method='average', partition="upex",
     arr = arr.unstack()
 
     # take maximum 200 trains for the simple average
+    # skip trains to get max_trains trains
     if method == 'average':
         last = min(200, last)
+        train_step = 1
+    elif method == 'single':
+        train_step = (last // max_trains) + 1
 
     # select pulses and skip the first one
-    arr = arr[..., :last, first_cell:npulses+first_cell]
+    arr = arr[..., :last:train_step, first_cell:npulses+first_cell]
     npulses = arr.shape[-1]
 
     if to_counts:
