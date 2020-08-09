@@ -37,7 +37,7 @@ setup(
         'extra_geom',
         'dask[complete]',
         'dask_jobqueue',
-        'Xana',
+        'Xana @ git+https://github.com/reiserm/Xana@master#egg=Xana',
     ],
     entry_points={
         'console_scripts': [
