@@ -33,7 +33,7 @@ jobs:
         cd `mktemp -d`
         python -c "from midtools import dataset"
         python -c "from midtools import azimuthal_integration"
-        python -c "from midtools import correlation"
+        python -c "from midtools import correlate"
         #    - name: Test with pytest
         #      run: |
         #        pytest
