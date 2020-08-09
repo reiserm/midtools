@@ -11,7 +11,6 @@ on:
 
 jobs:
   build:
-
     runs-on:  ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -29,6 +28,16 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install .[test]
+    - name: Import Tests
+      run: |
+        cd `mktemp -d`
+        python -c "from midtools import dataset"
+        python -c "from midtools import azimuthal_integration"
+        python -c "from midtools import correlation"
+        #    - name: Test with pytest
+        #      run: |
+        #        pytest
+
 #     - name: Test with pytest
 #       run: |
 #         pytest
