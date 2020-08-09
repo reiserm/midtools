@@ -39,3 +39,11 @@ midtools/test_dask.py
 silica-20nm/
 silica-50nm/
 vycor/
+
+docs/r0522-analysis.h5
+docs/r522_1587482383.h5
+docs/r522_test.h5
+docs/test.h5
+midtools/setup_config/coarse_mask.npy
+midtools/setup_config/combined_mask_2.npy
+tests/midtools_test_data_saxs.h5
