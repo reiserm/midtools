@@ -30,6 +30,7 @@ from Xana import Setup
 
 from .azimuthal_integration import azimuthal_integration
 from .correlations import correlate
+from .average import average
 
 from functools import reduce
 
@@ -40,7 +41,7 @@ class Dataset:
     METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS']
 
     def __init__(self, setupfile, analysis='00', last_train=1e6,
-            run_number=None, pulses_per_train=500):
+            run_number=None, pulses_per_train=500, dark_run_number=None):
         """Dataset object to analyze MID datasets on Maxwell.
 
         Args:
@@ -103,22 +104,6 @@ class Dataset:
         self.setupfile = setupfile
         setup_pars = self._read_setup(setupfile)
 
-        #: str: Flags of the analysis methods.
-        self.analysis = '11' + analysis
-
-        self.run_number = run_number
-        self.datdir = setup_pars.pop('datdir', False)
-
-        #: DataCollection: e.g., returned from extra_data.RunDirectory
-        self.run = RunDirectory(self.datdir)
-
-        self.mask = setup_pars.pop('mask', None)
-
-        #: tuple: Position of the direct beam in pixels
-        self.center = None
-
-        self.agipd_geom = setup_pars.pop('geometry', False)
-
         #: dict: options for the Slurm cluster
         self._slurm_opt = setup_pars.pop('slurm_opt', {})
         #: dict: options for the SAXS algorithm
@@ -126,30 +111,50 @@ class Dataset:
         #: dict: options for the XPCS algorithm
         self._xpcs_opt = setup_pars.pop('xpcs_opt', {})
 
-        # save the other entries as attributes
-        self.__dict__.update(setup_pars)
+        #: bool: True if the SLURMCluster is running
+        self._cluster_running  = False
+
+        #: str: Flags of the analysis methods.
+        self.analysis = '11' + analysis
+        self.run_number = run_number
+        self.datdir = setup_pars.pop('datdir', False)
+        #: DataCollection: e.g., returned from extra_data.RunDirectory
+        self.run = RunDirectory(self.datdir)
+        self.mask = setup_pars.pop('mask', None)
 
         #: int: Number of X-ray pulses per train.
         self.pulse_ids = self._get_pulse_ids()
-
         #: np.ndarray: Array of pulse IDs.
         self.pulses_per_train = min([len(self.pulse_ids), pulses_per_train])
         self.pulse_ids = self.pulse_ids[:self.pulses_per_train]
-
         #: float: Delay time between two successive pulses.
         self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
-
         #: np.ndarray: All train IDs.
         self.train_ids = np.array(self.run.train_ids)
-
         #: int: last train index to compute
         self.last_train_idx = min([last_train,len(self.train_ids)])
-
         #: int: Number of complete trains
         self.ntrains = min([len(self.train_ids), self.last_train_idx])
-
         #: np.ndarray: All train indices.
         self.train_indices = np.arange(self.train_ids.size)
+
+        #: (str, None): Directory of dark run. Determined by dark_run_number
+        self.darkdir = None
+        #: (DataCollection, None): DataCollection of HG dark run.
+        self.darkrun = None
+        #: (np.ndarray, None): average dark over trains
+        self.avr_dark = None
+        # setting the dark run also sets the other dark attributes
+        self.dark_run_number = dark_run_number
+
+        # Experimental Setup
+        #: tuple: Position of the direct beam in pixels
+        self.center = None
+        self.agipd_geom = setup_pars.pop('geometry', False)
+
+        # save the other entries as attributes
+        self.__dict__.update(setup_pars)
+        del setup_pars
 
         self.setup = Setup(detector='agipd1m')
         self.setup.mask = self.mask.copy()
@@ -160,12 +165,9 @@ class Dataset:
         self.setup.detector.IS_CONTIGUOUS = False
         self.setup.detector.set_pixel_corners(dist)
         self.setup._update_ai()
-
         qmap = self.setup.ai.array_from_unit(unit='q_nm^-1');
         #: np.ndarray: q-map
         self.qmap = qmap.reshape(16,512,128);
-
-        del setup_pars
 
         #: dict: Structure of the HDF5 file
         self.h5_structure = self._make_h5structure()
@@ -285,9 +287,36 @@ class Dataset:
         elif number is None:
             pass
         else:
-            raise TypeError(f'Invalid run number {type(number)}.')
-
+            raise TypeError(f'Invalid run number type {type(number)}.')
         self.__run_number = number
+
+    @property
+    def dark_run_number(self):
+        """int: Run number of high gain dark."""
+        return self.__dark_number
+
+    @dark_run_number.setter
+    def dark_run_number(self, number):
+        if isinstance(number, int):
+            if 'proc' in self.datdir:
+                raise ValueError("Use dark options only with raw data")
+            self.darkdir = re.sub('r\d{4}', f'r{number:04}', self.datdir)
+            self.darkrun = RunDirectory(self.darkdir)
+
+            # process darsk
+            self._start_slurm_cluster()
+            self._cluster_running =True
+            self.avr_dark = average(self.darkrun,
+                                    last=10,
+                                    npulses=self.pulses_per_train,
+                                    client=self._client)
+            print(type(self.avr_dark), self.avr_dark.shape)
+            self._client.restart()
+        elif number is None:
+            pass
+        else:
+            raise TypeError(f'Invalid dark run number type {type(number)}.')
+        self.__dark_run_number = number
 
 
     @staticmethod
@@ -463,21 +492,19 @@ class Dataset:
         if create_file:
             self._create_output_file()
 
-        clst_running  = False
         try:
             for i, (flag, method) in enumerate(zip(self.analysis, self.METHODS)):
                 if int(flag):
-                    if method not in ['META', 'DIAGNOSTICS'] and not clst_running:
+                    if method not in ['META', 'DIAGNOSTICS'] and not self._cluster_running:
                         self._start_slurm_cluster()
-                        clst_running = True
+                        self._cluster_running = True
                     print(f"\n{method:-^50}")
                     getattr(self,
                             f"_compute_{method.lower()}")()
                     print(f"{' Done ':-^50}")
                     # pdb.set_trace()
-                    if clst_running:
+                    if self._cluster_running:
                         self._client.restart()
-                        pass
         finally:
             if self._client is not None:
                 self._stop_slurm_cluster()
@@ -624,6 +651,13 @@ def _get_parser():
             default=None,
             )
     parser.add_argument(
+            '-dr',
+            '--dark_run',
+            type=int,
+            help='Dark run number.',
+            default=None,
+            )
+    parser.add_argument(
             '--last',
             type=int,
             help='last train to analyze.',
@@ -639,6 +673,7 @@ def _get_parser():
             )
     return parser
 
+
 def main():
 
     # get the command line arguments
@@ -648,10 +683,11 @@ def main():
     t_start = time.time()
 
     data = Dataset(args.setupfile,
-                   args.analysis,
-                   args.last,
-                   args.run,
-                   args.pulses_per_train,
+                   analysis=args.analysis,
+                   last_train=args.last,
+                   run_number=args.run,
+                   pulses_per_train=args.pulses_per_train,
+                   dark_run_number=args.dark_run,
                    )
     print("Development Mode")
     print(f"\n{' Starting Analysis ':-^50}")

@@ -24,12 +24,8 @@ import pdb
 def azimuthal_integration(run, method='average', partition="upex",
     quad_pos=None, verbose=False, last=None, npulses=None, first_cell=1,
     mask=None, to_counts=False, apply_internal_mask=False, setup=None,
-<<<<<<< HEAD
-    client=None, geom=None, savname=None, adu_per_photon=65, **kwargs):
-=======
     client=None, geom=None, savname=None, adu_per_photon=65,
     max_trains=10_000, **kwargs):
->>>>>>> master
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
@@ -107,45 +103,6 @@ def azimuthal_integration(run, method='average', partition="upex",
     # get the azimuthal integrator
     ai = copy.copy(setup.ai)
 
-    agp = AGIPD1M(run, min_modules=16)
-    arr = agp.get_dask_array('image.data')
-    print("Got dask array", flush=True)
-
-    # coords are module, dim_0, dim_1, trainId, pulseId after unstack
-    arr = arr.unstack()
-
-    # take maximum 200 trains for the simple average
-    # skip trains to get max_trains trains
-    if method == 'average':
-        last = min(200, last)
-        train_step = 1
-    elif method == 'single':
-        train_step = (last // max_trains) + 1
-
-    # select pulses and skip the first one
-    arr = arr[..., :last:train_step, first_cell:npulses+first_cell]
-    npulses = arr.shape[-1]
-
-    if to_counts:
-        arr.data = np.floor((arr.data + 0.5*adu_per_photon) / adu_per_photon)
-        arr.data[arr.data<0] = 0
-        # arr.data.astype('float32')
-
-    if apply_internal_mask:
-        mask_int = agp.get_dask_array('image.mask')
-        mask_int = mask_int.unstack()
-        mask_int = mask_int[..., :last, first_cell:npulses+first_cell]
-        arr = arr.where((mask_int.data <= 0) | (mask_int.data>=8))
-        # mask[(mask_int.data > 0) & (mask_int.data<8)] = 0
-
-    arr = arr.stack(train_pulse=('trainId', 'pulseId'),
-                    pixels=('module', 'dim_0', 'dim_1'))
-    arr = arr.transpose('train_pulse', 'pixels')
-    print(arr)
-
-    # apply common mode correction
-    dim = arr.get_axis_num("pixels")
-    arr = da.apply_along_axis(commonmode_frame, dim, arr.data)
 
     print("Start computation", flush=True)
     if method == 'average':
