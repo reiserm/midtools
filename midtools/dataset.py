@@ -14,7 +14,7 @@ import argparse
 from shutil import copyfile
 
 # XFEL packages
-from extra_data import RunDirectory
+from extra_data import RunDirectory, H5File
 from extra_geom import AGIPD_1MGeometry
 
 # Dask
@@ -110,7 +110,7 @@ class Dataset:
         self.datdir = setup_pars.pop('datdir', False)
 
         #: DataCollection: e.g., returned from extra_data.RunDirectory
-        self.run = RunDirectory(self.datdir)
+        self.run = self._get_data_collection()
 
         self.mask = setup_pars.pop('mask', None)
 
@@ -248,10 +248,12 @@ class Dataset:
         else:
             raise FileNotFoundError(f"Data directory {path} das not exist.")
 
+
     @property
     def agipd_geom(self):
         """AGIPD_1MGeometry: AGIPD geometry obtained from extra_data."""
         return self.__agipd_geom
+
 
     @agipd_geom.setter
     def agipd_geom(self, geom):
@@ -267,10 +269,12 @@ class Dataset:
         self.center = geom.position_modules_fast(dummy_img)[1][::-1]
         del dummy_img
 
+
     @property
     def run_number(self):
         """int: Number of the run."""
         return self.__run_number
+
 
     @run_number.setter
     def run_number(self, number):
@@ -316,12 +320,14 @@ class Dataset:
                             setupfile. Loading geometry file...')
             return setup_pars
 
+
     @property
     def mask(self):
         """np.ndarray: shape(16,512,128) Mask where `bad` pixels are 0
         and `good` pixels 1.
         """
         return self.__mask
+
 
     @mask.setter
     def mask(self, mask):
@@ -342,6 +348,17 @@ class Dataset:
             raise TypeError(f'Cannot read mask of type {type(mask)}.')
 
         self.__mask = np.array(mask).astype('int8')
+
+
+    def _get_data_collection(self):
+        """Returns the extra_data DataCollection object"""
+        if self.datdir.endswith('.h5'):
+            run = H5File(self.datdir)
+            print(run.all_sources)
+        else:
+            run = RunDirectory(self.datdir)
+        return run
+
 
     @staticmethod
     def _get_good_trains(run):

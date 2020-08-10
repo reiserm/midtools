@@ -1,0 +1,30 @@
+# setup.yml file
+
+# data
+datdir: ./tests/midtools_test_data_saxs_r0000.h5
+
+# mask: /gpfs/exfel/exp/MID/202001/p002458/scratch/midtools/agipd_mask_tmp.npy
+mask: ./midtools/setup_config/combined_mask.npy
+
+# Beamline
+
+photon_energy: 9 # keV
+sample_detector: 8 # m
+pixel_size: 200 # um
+
+quadrant_positions:
+  dx: -18
+  dy: -15
+  q1: [-500, 650]
+  q2: [-550, -30]
+  q3: [ 570, -216]
+  q4: [ 620, 500]
+
+# XPCS
+
+xpcs_opt:
+    q_range:
+      q_first: .1 # smallest q in nm-1
+      q_last: .3  # largest q in nm-1
+      nsteps: 10   # how many q-bins
+    norm: none
