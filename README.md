@@ -46,13 +46,13 @@ the `_get_data()` method of a `Calibrator` instance.
 ## Optimizing Dask
 
 Whether or not everything runs smoothly, depends mostly on the `SLURMCluster`
-settings and the chunksize of the data. I put two example setupfiles in the
-`tests` folder.
+settings and the chunksize of the data both can be modified in the setupfile.
+I put two example setupfiles in the `tests` folder.
 - `tests/setup_dask_good.yml` contains parameter that work (probably not optimum)
 - `tests/setup_dask_bad.yml` crushes especially when applying midtools to large runs.
 
 Even when the program finishes without errors, the log files contain GIL warnings
-about too big chunks.
+complaining about too big chunks.
 
 I reproduced the described behavior by running
 
@@ -60,9 +60,9 @@ I reproduced the described behavior by running
 midtools tests/setup_dask_[good|bad].yml 11 -r 201 -ppt 100 --last 100
 ```
 
-The data directory (proposal) is defined in the setupfile. We are aiming for
-analyzing the first 100 trains of run 201. Each train contains 100 pulses per
-train (-ppt). Again the `11` means, we would like to apply both analysis
+The data directory (proposal) is defined in the setupfile. Here, we are aiming
+for analyzing the first 100 trains of run 201. Each train contains 100 pulses
+per train (-ppt). Again the `11` means, we would like to apply both analysis
 methods.
 
 
