@@ -1,0 +1,61 @@
+# setup.yml file
+
+# data
+datdir: /gpfs/exfel/exp/MID/202022/p002693/proc/
+
+# datdir: /gpfs/exfel/exp/MID/202001/p002458/scratch/example_data/r0522
+#  cycle: 202001
+#  proposal: 2458
+#  datatype: proc # or raw
+#  run: 1
+
+# mask: /gpfs/exfel/exp/MID/202001/p002458/scratch/midtools/agipd_mask_tmp.npy
+mask: /gpfs/exfel/data/user/reiserm/projects/proteins/mid-p2458/midtools/midtools/setup_config/agipd_mask.npy
+
+# Beamline
+photon_energy: 9 # keV
+sample_detector: 8 # m
+pixel_size: 200 # um
+
+# Define Geometry either by geometry file or quadrant positions
+# geometry: /gpfs/exfel/data/user/reiserm/projects/proteins/mid-p2458/midtools/midtools/setup_config/geo_assembled_3a.geom
+
+quadrant_positions:
+  dx: 0
+  dy: 0
+  q1: [-528.6882485293925, 679.0254451299463]
+  q2: [-595.6882485293925, -15.974554870053687]
+  q3: [547.3117514706075, -205.97455487005365]
+  q4: [601.3117514706075, 491.0254451299463]
+
+# SAXS
+saxs_opt:
+  max_trains: 200
+  chunks:
+    single:
+      train_pulse: 128  # pulseId, trainId combined
+      pixels: 65536  # 512 * 128,  module, dim_0, dim_1 combined
+
+# XPCS
+xpcs_opt:
+  q_range:
+    q_first: .1  # smallest q in nm-1
+    q_last: .4 # largest q in nm-1
+    nsteps: 10   # how many q-bins
+  norm: corrcoef
+  use_multitau: True
+  chunks:
+    per_train:
+      trainId: 1
+      train_data: 1048576  # full frame 16*512*128, all dimensions combined
+                           # except for trainId
+
+# SLurm options
+slurm_opt:
+  njobs: 12
+  nprocs: 12
+  memory: 768GB
+  partition: exfel
+
+
+

@@ -428,16 +428,16 @@ class Dataset:
         """Initialize the slurm cluster"""
 
         opt = self._slurm_opt
-        nprocs = opt.pop('nprocs', 4)
-        threads_per_process = 6
-        nprocs = 72//threads_per_process
+        nprocs = opt.pop('nprocs', 12)
+        # threads_per_process = 6
+        # nprocs = 72//threads_per_process
         njobs = opt.pop('njobs', min(max(int(self.ntrains/64), 4), 12))
         print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
         self._cluster = SLURMCluster(
             queue=opt.get('partition',opt.pop('partition', 'exfel')),
             processes=nprocs,
             cores=nprocs,  # *threads_per_process,
-            memory='768GB',
+            memory=opt.pop('memory', '768GB'),
             log_directory='./dask_log/',
             local_directory='/scratch/',
             nanny=True,

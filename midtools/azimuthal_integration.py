@@ -83,6 +83,8 @@ def azimuthal_integration(calibrator, method='average', last=None,
     if chunks is None:
         chunks = {'average': {'train_pulse': 8, 'pixels': 16*512*128},
                   'single': {'train_pulse': 128, 'pixels': 128*512}}
+    else:
+        print(f'Using user defined chunks: {chunks[method]}')
 
     # get the azimuthal integrator
     ai = copy.copy(setup.ai)

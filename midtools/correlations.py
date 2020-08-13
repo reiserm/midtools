@@ -89,6 +89,8 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
 
     if chunks is None:
         chunks = {'per_train': {'trainId': 1, 'train_data': 16*512*128}}
+    else:
+        print(f'Using user defined chunks: {chunks[method]}')
 
     arr = calibrator._get_data(last_train=last)
 
