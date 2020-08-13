@@ -34,6 +34,8 @@ class Calibrator:
                             'dropletize': dropletize,
                             'baseline': baseline}
 
+        self.stripes = stripes
+
 
     @property
     def dark_run_number(self):
@@ -74,11 +76,11 @@ class Calibrator:
             if stripes.shape != (16, 512, 128):
                 raise ValueError("Stripe mask has wrong shape: "
                                  f"shape is {stripe.shape}")
+            self.corrections['baseline'] = True
         elif stripes is None:
             pass
         else:
             raise TypeError(f'Invalid dark run number type {type(number)}.')
-        self.corrections['baseline'] = True
         self.__stripes = stripes
 
 
@@ -114,15 +116,14 @@ class Calibrator:
 
         arr = arr.stack(train_pulse=('trainId', 'pulseId'),
                         pixels=('module', 'dim_0', 'dim_1'))
-        arr = arr.transpose('train_pulse', 'pixels')
 
+        # apply corrections
         for correction, options in self.corrections.items():
             if bool(options):
-                getattr(self, "_" + correction)()
+                print(f"Apply correction: {correction}")
+                arr = getattr(self, "_" + correction)(arr)
 
-                # apply common mode correction
-                # dim = arr.get_axis_num("pixels")
-                # arr = da.apply_along_axis(commonmode_frame, dim, arr.data)
+        arr = arr.transpose('train_pulse', 'pixels')
         return arr
 
 
@@ -150,14 +151,14 @@ class Calibrator:
         return arr
 
 
-#       def _baseline(self, arr):
-#           """Baseline correction based on Ta stripes"""
-#           arr = arr.unstack()
-#           def func(a, module_number):
-#               stripe = self.stripes[module_number] == 1
-#               median = np.median(a[stripe])
-#                -= e[np.argmax(h)]
-#           tmp = da.apply_along_axis(func,)
+    def _baseline(self, arr):
+        """Baseline correction based on Ta stripes"""
+        arr = arr.unstack('pixels')
+        pix = arr.where(self.stripes[None, ...])
+        module_median = pix.median(['dim_0', 'dim_1'], skipna=True)
+        arr = arr - module_median
+        arr = arr.stack(pixels=('module', 'dim_0', 'dim_1'))
+        return arr
 
 
     @staticmethod

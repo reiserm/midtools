@@ -39,7 +39,7 @@ import pdb
 
 class Dataset:
 
-    METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS', 'DARK']
+    METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS', 'FRAMES', 'DARK']
 
     def __init__(self, setupfile, analysis='00', last_train=1e6,
             run_number=None, dark_run_number=None, pulses_per_train=500,
@@ -57,9 +57,11 @@ class Dataset:
                 +-------+----------------------------+
                 | flags | analysis                   |
                 +=======+============================+
-                |  10   | SAXS azimuthal integration |
+                |  100  | SAXS azimuthal integration |
                 +-------+----------------------------+
-                |  01   | XPCS correlation functions |
+                |  010  | XPCS correlation functions |
+                +-------+----------------------------+
+                |  001  | Average frames             |
                 +-------+----------------------------+
 
             last_train (int, optional): Index of last train to analyze. If not
@@ -67,8 +69,11 @@ class Dataset:
             run_number (int, optional): Specify run number. Defaults to None.
                 If not defined, the datdir in the setupfile has to contain the
                 .h5 files.
+            dark_run_number (int, optional): Dark run number for calibration.
             pulses_per_train (int, optional): Specify the number of pulses per
                 train. If not provided, take all stored memory cells.
+            train_step (int, optional): Stepsize for slicing the train axis.
+            pulse_step (int, optional): Stepsize for slicing the pulse axis.
 
         Note:
             A setupfile might look like this::
@@ -106,16 +111,13 @@ class Dataset:
         self.setupfile = setupfile
         setup_pars = self._read_setup(setupfile)
 
-        #: dict: options for the Slurm cluster
-        self._slurm_opt = setup_pars.pop('slurm_opt', {})
-        #: dict: options for the SAXS algorithm
-        self._saxs_opt = setup_pars.pop('saxs_opt', {})
-        #: dict: options for the XPCS algorithm
-        self._xpcs_opt = setup_pars.pop('xpcs_opt', {})
-        #: dict: options for the data calibration
-        self._calib_opt = setup_pars.pop('calib_opt', {})
-        #: dict: options for the dark calibration
-        self._dark_opt = setup_pars.pop('dark_opt', {})
+        options = ['slurm', 'calib']
+        options.extend(list(map(str.lower, self.METHODS[2:])))
+        for option in options:
+            option_name = "_".join([option, 'opt'])
+            attr_name = "_" + option_name
+            attr_value = setup_pars.pop(option_name, {})
+            setattr(self, attr_name, attr_value)
 
         #: bool: True if the SLURMCluster is running
         self._cluster_running  = False
@@ -199,10 +201,6 @@ class Dataset:
                     (self.ntrains,self.pulses_per_train), 'float32', ],
             },
             'SAXS': {
-                "/average/azimuthal_intensity":[(2,500),'float32'],
-                "/average/image_2d":[None, 'float32'],
-                "/average/image":[(16,512,128), 'float32'],
-                "/pulse_resolved/frames": [(1000, 1000), 'float32',],
                 "/pulse_resolved/azimuthal_intensity/q":[(500,), 'float32'],
                 "/pulse_resolved/azimuthal_intensity/I":[
                     (self.ntrains*self.pulses_per_train,500),'float32',],
@@ -212,9 +210,10 @@ class Dataset:
                 "/train_resolved/correlation/t":[None,None],
                 "/train_resolved/correlation/g2":[None,None],
             },
-            'DARK': {
+            'FRAMES': {
                 "/average/intensity": [None,None],
                 "/average/variance":[None,None],
+                "/average/image_2d":[None, 'float32'],
             },
         }
         return h5_structure
@@ -332,6 +331,12 @@ class Dataset:
                 else:
                     print('Quadrant positions and geometry file defined by \
                             setupfile. Loading geometry file...')
+
+            # if the key exists in the setup file without any entries, None is
+            # returned. We convert those entries to empty dictionaires.
+            for key, value in setup_pars.items():
+                if value is None:
+                    setup_pars[key] = {}
             return setup_pars
 
 
@@ -346,7 +351,7 @@ class Dataset:
     @mask.setter
     def mask(self, mask):
         if mask is None:
-            mask = np.ones((16,512,128), 'int8')
+            mask = np.ones((16,512,128), 'bool')
         elif isinstance(mask, str):
             try:
                 mask = np.load(mask)
@@ -361,7 +366,7 @@ class Dataset:
         else:
             raise TypeError(f'Cannot read mask of type {type(mask)}.')
 
-        self.__mask = np.array(mask).astype('int8')
+        self.__mask = np.array(mask).astype('bool')
 
 
     @staticmethod
@@ -530,7 +535,8 @@ class Dataset:
     def _compute_diagnostics(self):
         """Read diagnostic data. """
         print(f"Read XGM data.")
-        arr = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output', 'data.intensityTD')
+        arr = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
+                                 'data.intensityTD')
         arr = {'data': arr[self.train_indices,:self.pulses_per_train]}
         self._write_to_h5(arr, 'DIAGNOSTICS')
 
@@ -549,17 +555,17 @@ class Dataset:
         saxs_opt.update(self._saxs_opt)
 
         # compute average
-        print('Compute average SAXS')
-        out = azimuthal_integration(self._calibrator,
-                method='average', **saxs_opt)
+        # print('Compute average SAXS')
+        # out = azimuthal_integration(self._calibrator,
+        #         method='average', **saxs_opt)
 
-        # restart the client
-        self._client.restart()
+        # # restart the client
+        # self._client.restart()
 
         # compute pulse resolved
         print('\nCompute pulse resolved SAXS')
-        out.update(azimuthal_integration(self._calibrator,method='single',
-            **saxs_opt))
+        out = azimuthal_integration(self._calibrator, method='single',
+                **saxs_opt)
 
         self._write_to_h5(out, 'SAXS')
 
@@ -586,17 +592,20 @@ class Dataset:
         self._write_to_h5(out, 'XPCS')
 
 
-    def _compute_dark(self):
+    def _compute_frames(self):
         """Averaging darks."""
 
-        # specify XPCS options
-        dark_opt = dict(axis='train',)
-        dark_opt.update(self._dark_opt)
+        frames_opt = dict(axis='train')
+        frames_opt.update(self._frames_opt)
 
         # compute
-        print('Computing darks.')
-        out = average(self._calibrator, **dark_opt)
-        self._write_to_h5(out, 'DARK')
+        print('Computing frames.')
+        out = average(self._calibrator, **frames_opt)
+
+        img2d = self.agipd_geom.position_modules_fast(out['average'])[0]
+        out.update({'image2d': img2d})
+
+        self._write_to_h5(out, 'FRAMES')
 
 
     def _write_to_h5(self, output, method):
@@ -678,7 +687,6 @@ def main():
     print(f"Analyzing {data.ntrains} trains of {data.datdir}")
     data.compute()
 
-    print(f"Found {data.train_indices.size} complete trains")
     elapsed_time = time.time() - t_start
     print(f"Finished: elapsed time: {elapsed_time/60:.2f}min")
     print(f"Results saved under {data.file_name}")
