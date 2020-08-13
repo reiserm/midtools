@@ -19,58 +19,38 @@ from dask.diagnostics import ProgressBar
 
 import pdb
 
-def average(run, last=None, npulses=None, first_cell=1, mask=None,
-        to_counts=False, apply_internal_mask=False, client=None, geom=None,
-        adu_per_photon=65, max_trains=10_000, **kwargs):
+def average(calibrator, last=None, chunks=None, axis='train_pulse', **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
         run (DataCollection): the run objection, e.g., created by RunDirectory.
     """
 
-    agp = AGIPD1M(run, min_modules=16)
-    arr = agp.get_dask_array('image.data')
-    print("Got dask array", flush=True)
+    axisl = []
+    if 'train' in axis:
+        axisl.append('trainId')
+    if 'pulse' in axis:
+        axisl.append('pulseId')
 
-    # coords are module, dim_0, dim_1, trainId, pulseId after unstack
-    arr = arr.unstack()
-    is_proc = True if len(arr.dims) == 5 else False
-    print(is_proc, arr)
+    arr = calibrator._get_data(last_train=last)
 
-    # take maximum 200 trains for the simple average
-    # skip trains to get max_trains trains
-    last = min(200, last)
-    train_step = 1
+    if len(axisl) == 1:
+        axis = axisl[0]
+        arr = arr.unstack('train_pulse')
+        arr = arr.transpose(axis, ..., 'pixels')
+    if len(axisl) == 2:
+        axis = 'train_pulse'
 
-    # select pulses and skip the first one
-    if is_proc:
-        arr = arr[..., :last:train_step, first_cell:npulses+first_cell]
-    else:
-        arr = arr[:, 0, ..., :last:train_step, first_cell:npulses+first_cell]
-    npulses = arr.shape[-1]
-
-    if to_counts:
-        arr.data = np.floor((arr.data + 0.5*adu_per_photon) / adu_per_photon)
-        arr.data[arr.data<0] = 0
-        # arr.data.astype('float32')
-
-    if apply_internal_mask:
-        mask_int = agp.get_dask_array('image.mask')
-        mask_int = mask_int.unstack()
-        mask_int = mask_int[..., :last, first_cell:npulses+first_cell]
-        arr = arr.where((mask_int.data <= 0) | (mask_int.data>=8))
-        # mask[(mask_int.data > 0) & (mask_int.data<8)] = 0
-
-    print(arr)
+    if chunks is None:
+        chunks = {axis: 128}
 
     print("Start computation", flush=True)
-    # store some single frames
-    last_train_pulse = min(npulses*100, arr.shape[0])
-    frames = np.array(arr[:last_train_pulse:npulses*10])
-    frames = frames.reshape(-1, 16, 512, 128)
-
-    arr = arr.chunk({'trainId': 1})
-    arr = client.persist(arr.mean('trainId', skipna=True))
+    arr = arr.chunk(chunks)
+    average = arr.mean(axis, skipna=True, keepdims=True).persist()
     progress(arr)
+    average = np.squeeze(average.values.reshape(-1, 16, 512, 128))
+    variance = arr.var(axis, skipna=True, keepdims=True).persist()
+    progress(variance)
+    variance = np.squeeze(variance.values.reshape(-1, 16, 512, 128))
 
-    return np.array(arr)
+    return {'average': average, 'variance': variance}

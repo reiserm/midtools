@@ -17,31 +17,19 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
-from .corrections import commonmode_series, commonmode_frame
-
 import pdb
 
-def azimuthal_integration(run, method='average', partition="upex",
-    quad_pos=None, verbose=False, last=None, npulses=None, first_cell=1,
-    mask=None, to_counts=False, apply_internal_mask=False, setup=None,
-    client=None, geom=None, savname=None, adu_per_photon=65,
-    max_trains=10_000, **kwargs):
+def azimuthal_integration(calibrator, method='average', last=None,
+    mask=None, setup=None, geom=None, max_trains=10_000, chunks=None,
+    savname=None, **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
-        run (DataCollection): the run objection, e.g., created by RunDirectory.
+        calibrator (Calibrator): the data broker.
 
         method (str, optional): how to integrate. Defaults to average. Use
             average to average all trains and pulses. Use single to calculate
             the azimuthally integrated intensity per pulse.
-
-        partition (str, optional): Maxwell partition. Defaults upex. upex for
-            users, exfel for  XFEL employees.
-
-        quad_pos (list, optional): list of the four quadrant positions. If not
-            provided, the latest configuration will be used.
-
-        verbose (bool, optional): whether to print output. Defaults to True.
 
         last (int, optional): last train index. Defaults None. Set to small
             number for testing.
@@ -49,21 +37,13 @@ def azimuthal_integration(run, method='average', partition="upex",
         mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0. If
             None, no pixel is masked.
 
-        to_count (bool, optional): Convert the adus to photon counts based on
-            thresholding and the value of adu_per_photon.
-
-        apply_internal_mask (bool, optional): Read and apply the mask calculated
-            from the calibration pipeline. Defaults to True.
-
         setup (Xana.Setup, optional): Xana setup. Defaults to None.
 
-        geom (geometry, optional):
+        geom (geometry, optional): AGIPD1M geometry.
 
         savname (str, optional): Prefix of filename under which the results are
             saved automatically. Defaults to azimuthal_integration. An
             incrementing number is added not to overwrite previous results.
-
-        adu_per_photon ((int,float), optional): number of ADUs per photon.
 
     Returns:
         dict: Dictionary containing the results depending on the method it
@@ -100,29 +80,41 @@ def azimuthal_integration(run, method='average', partition="upex",
 
     t_start = time()
 
+    if chunks is None:
+        chunks = {'average': {'train_pulse': 8, 'pixels': 16*512*128},
+                  'single': {'train_pulse': 128, 'pixels': 128*512}}
+
     # get the azimuthal integrator
     ai = copy.copy(setup.ai)
 
+    # take maximum 200 trains for the simple average
+    # skip trains to get max_trains trains
+    if method == 'average':
+        last = min(200, last)
+        train_step = 1
+    elif method == 'single':
+        train_step = (last // max_trains) + 1
+
+    arr = calibrator._get_data(last_train=last, train_step=train_step)
+    npulses = arr.shape[-1]
 
     print("Start computation", flush=True)
     if method == 'average':
         # store some single frames
         last_train_pulse = min(npulses*100, arr.shape[0])
-        frames = np.array(arr[:last_train_pulse:npulses*10])
+        frames = arr[:last_train_pulse:npulses*10].values
         frames = frames.reshape(-1, 16, 512, 128)
 
-        arr = arr.chunk({'train_pulse': 8, 'pixels': 16*512*128})
-        arr = client.persist(arr.mean('train_pulse', skipna=True))
+        arr = arr.chunk(chunks['average'])
+        arr = arr.mean('train_pulse', skipna=True).persist()
         progress(arr)
-
-        arr = arr.reshape(-1, 16, 512, 128)
+        arr = arr.values.reshape(16, 512, 128)
 
         # aziumthal integration
         q, I = integrate_azimuthally(arr)
-        img2d = geom.position_modules_fast(arr.data)[0]
+        img2d = geom.position_modules_fast(arr)[0]
 
-        savdict = {"soq":(q,I), "avr2d":img2d, "avr":np.array(arr),
-                    "frames": frames}
+        savdict = {"soq":(q,I), "avr2d":img2d, "avr":arr, "frames": frames}
         del arr, frames
 
         if savname is None:
@@ -132,19 +124,17 @@ def azimuthal_integration(run, method='average', partition="upex",
             pickle.dump(savdict, open(savname, 'wb'))
 
     elif method == 'single':
-        arr = arr.stack(pixels=('module','dim_0','dim_1'))
-        arr = arr.chunk({'train_pulse': 128, 'pixels': 128*512})
-        arr = arr.transpose('train_pulse', 'pixels')
+        arr = arr.chunk(chunks['single'])
 
         dim = arr.get_axis_num("pixels")
         q = integrate_azimuthally(arr[0])[0]
         arr = da.apply_along_axis(integrate_azimuthally, dim, \
             arr.data, dtype='float32', shape=(500,), returnq=False)
 
-        arr = client.persist(arr)
+        arr = arr.persist()
         progress(arr)
 
-        savdict = {"q(nm-1)":q, "soq-pr":np.array(arr)}
+        savdict = {"q(nm-1)":q, "soq-pr":arr.compute()}
         del arr
 
         if savname is None:
@@ -156,12 +146,3 @@ def azimuthal_integration(run, method='average', partition="upex",
         raise(ValueError(f"Method {method} not understood. \
                         Choose between 'average' and 'single'."))
 
-    elapsed_time = time() - t_start
-    if local_client:
-        cluster.close()
-        client.close()
-    if verbose:
-        print(f"Finished: elapsed time: {elapsed_time/60:.2f}min")
-        print(f"Filename is {savname}")
-
-    return

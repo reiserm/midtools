@@ -31,6 +31,7 @@ from Xana import Setup
 from .azimuthal_integration import azimuthal_integration
 from .correlations import correlate
 from .average import average
+from .corrections import Calibrator
 
 from functools import reduce
 
@@ -38,10 +39,11 @@ import pdb
 
 class Dataset:
 
-    METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS']
+    METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS', 'DARK']
 
     def __init__(self, setupfile, analysis='00', last_train=1e6,
-            run_number=None, pulses_per_train=500, dark_run_number=None):
+            run_number=None, dark_run_number=None, pulses_per_train=500,
+            train_step=1, pulse_step=1):
         """Dataset object to analyze MID datasets on Maxwell.
 
         Args:
@@ -110,6 +112,10 @@ class Dataset:
         self._saxs_opt = setup_pars.pop('saxs_opt', {})
         #: dict: options for the XPCS algorithm
         self._xpcs_opt = setup_pars.pop('xpcs_opt', {})
+        #: dict: options for the data calibration
+        self._calib_opt = setup_pars.pop('calib_opt', {})
+        #: dict: options for the dark calibration
+        self._dark_opt = setup_pars.pop('dark_opt', {})
 
         #: bool: True if the SLURMCluster is running
         self._cluster_running  = False
@@ -138,15 +144,6 @@ class Dataset:
         #: np.ndarray: All train indices.
         self.train_indices = np.arange(self.train_ids.size)
 
-        #: (str, None): Directory of dark run. Determined by dark_run_number
-        self.darkdir = None
-        #: (DataCollection, None): DataCollection of HG dark run.
-        self.darkrun = None
-        #: (np.ndarray, None): average dark over trains
-        self.avr_dark = None
-        # setting the dark run also sets the other dark attributes
-        self.dark_run_number = dark_run_number
-
         # Experimental Setup
         #: tuple: Position of the direct beam in pixels
         self.center = None
@@ -171,13 +168,21 @@ class Dataset:
 
         #: dict: Structure of the HDF5 file
         self.h5_structure = self._make_h5structure()
-
         #: str: HDF5 file name.
         self.file_name = None
+
+        #: Calibrator: Calibrator instance for data pre-processing
+        self._calibrator = Calibrator(self.run,
+                                      last_train=self.last_train_idx,
+                                      train_step=train_step,
+                                      pulse_step=pulse_step,
+                                      dark_run_number=dark_run_number,
+                                      **self._calib_opt)
 
         # placeholder attributes
         self._cluster = None # the slurm cluster
         self._client = None # the slurm cluster client
+
 
     def _make_h5structure(self):
         """Create the HDF5 data structure.
@@ -207,26 +212,34 @@ class Dataset:
                 "/train_resolved/correlation/t":[None,None],
                 "/train_resolved/correlation/g2":[None,None],
             },
+            'DARK': {
+                "/average/intensity": [None,None],
+                "/average/variance":[None,None],
+            },
         }
         return h5_structure
+
 
     def __str__(self):
         return "MID dataset."
 
+
     def __repr(self):
         return f"Dataset({self.setupfile})"
+
 
     @property
     def datdir(self):
         """str: Data directory."""
         return self.__datdir
 
+
     @datdir.setter
     def datdir(self, path):
         if isinstance(path, dict):
             basedir = '/gpfs/exfel/exp/MID/'
             if len(list(filter(lambda x: x in path.keys(),
-                               ['cycle', 'proposal', 'datatype', 'run']))) == 4:
+                             ['cycle', 'proposal', 'datatype', 'run']))) == 4:
                 path = basedir \
                     + f"/{path['cycle']}" \
                     + f"/p{path['proposal']:06d}" \
@@ -238,9 +251,9 @@ class Dataset:
             elif isinstance(self.run_number, int):
                 path += f"/r{self.run_number:04d}"
             else:
-                raise ValueError("Could not determine run number. Specify run \
-                        number with --run argument or pass data directory \
-                        with run folder (e.g., r0123.)")
+                raise ValueError("Could not determine run number. Specify run "
+                        "number with --run argument or pass data directory "
+                        "with run folder (e.g., r0123.)")
         else:
             raise ValueError(f'Invalid data directory: {path}')
 
@@ -250,10 +263,12 @@ class Dataset:
         else:
             raise FileNotFoundError(f"Data directory {path} das not exist.")
 
+
     @property
     def agipd_geom(self):
         """AGIPD_1MGeometry: AGIPD geometry obtained from extra_data."""
         return self.__agipd_geom
+
 
     @agipd_geom.setter
     def agipd_geom(self, geom):
@@ -269,10 +284,12 @@ class Dataset:
         self.center = geom.position_modules_fast(dummy_img)[1][::-1]
         del dummy_img
 
+
     @property
     def run_number(self):
         """int: Number of the run."""
         return self.__run_number
+
 
     @run_number.setter
     def run_number(self, number):
@@ -289,34 +306,6 @@ class Dataset:
         else:
             raise TypeError(f'Invalid run number type {type(number)}.')
         self.__run_number = number
-
-    @property
-    def dark_run_number(self):
-        """int: Run number of high gain dark."""
-        return self.__dark_number
-
-    @dark_run_number.setter
-    def dark_run_number(self, number):
-        if isinstance(number, int):
-            if 'proc' in self.datdir:
-                raise ValueError("Use dark options only with raw data")
-            self.darkdir = re.sub('r\d{4}', f'r{number:04}', self.datdir)
-            self.darkrun = RunDirectory(self.darkdir)
-
-            # process darsk
-            self._start_slurm_cluster()
-            self._cluster_running =True
-            self.avr_dark = average(self.darkrun,
-                                    last=10,
-                                    npulses=self.pulses_per_train,
-                                    client=self._client)
-            print(type(self.avr_dark), self.avr_dark.shape)
-            self._client.restart()
-        elif number is None:
-            pass
-        else:
-            raise TypeError(f'Invalid dark run number type {type(number)}.')
-        self.__dark_run_number = number
 
 
     @staticmethod
@@ -345,12 +334,14 @@ class Dataset:
                             setupfile. Loading geometry file...')
             return setup_pars
 
+
     @property
     def mask(self):
         """np.ndarray: shape(16,512,128) Mask where `bad` pixels are 0
         and `good` pixels 1.
         """
         return self.__mask
+
 
     @mask.setter
     def mask(self, mask):
@@ -371,6 +362,7 @@ class Dataset:
             raise TypeError(f'Cannot read mask of type {type(mask)}.')
 
         self.__mask = np.array(mask).astype('int8')
+
 
     @staticmethod
     def _get_good_trains(run):
@@ -407,6 +399,7 @@ class Dataset:
 
         return good_trains, good_indices
 
+
     def _get_pulse_ids(self, train_idx=0):
         source = 'MID_DET_AGIPD1M-1/DET/{}CH0:xtdf'
         i = 0
@@ -424,6 +417,7 @@ class Dataset:
             train_idx += 1
         raise ValueError("Unable to determine pulse ids. Probably the data \
                 source was not available.")
+
 
     def _start_slurm_cluster(self):
         """Initialize the slurm cluster"""
@@ -450,12 +444,15 @@ class Dataset:
         self._cluster.scale(nprocs*njobs)
         print(self._cluster)
         self._client = Client(self._cluster)
+        self._calibrator._client = self._client
         print("Cluster dashboard link:", self._cluster.dashboard_link)
+
 
     def _stop_slurm_cluster(self):
         """Shut down the slurm cluster"""
         self._client.close()
         self._cluster.close()
+
 
     def _create_output_file(self):
         """Create the HDF5 output file.
@@ -485,6 +482,7 @@ class Dataset:
                         pass
                         # f.create_dataset(path, shape=shape, dtype=dtype)
 
+
     def compute(self, create_file=True):
         """Start the actual computation based on the analysis attribute.
         """
@@ -509,9 +507,9 @@ class Dataset:
             if self._client is not None:
                 self._stop_slurm_cluster()
 
+
     def _compute_meta(self):
         """Find complete trains."""
-
         all_trains = len(self.train_ids)
         self.train_ids, self.train_indices = self._get_good_trains(self.run)
         print(f'{self.train_ids.size} of {all_trains} trains are complete.')
@@ -521,29 +519,21 @@ class Dataset:
         self.train_indices = self.train_indices[:self.ntrains]
         print(f'{self.ntrains} of {all_trains} trains will be processed.')
 
-        # writing output to hdf5 file
-        with h5.File(self.file_name, 'r+') as f:
-            keys = list(self.h5_structure['META'].keys())
-            values = [
-                self.pulses_per_train,
-                self.pulse_ids,
-                self.train_ids,
-                self.train_indices,
-                ]
-            for keyh5,item in zip(keys,values):
-                f[keyh5] = item
+        data = {'pulses_per_train': self.pulses_per_train,
+                'pulse_ids': self.pulse_ids,
+                'train_ids': self.train_ids,
+                'train_indices': self.train_indices,}
+
+        self._write_to_h5(data, 'META')
+
 
     def _compute_diagnostics(self):
         """Read diagnostic data. """
-        arr = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output', 'data.intensityTD')
-        arr = arr[self.train_indices,:self.pulses_per_train]
         print(f"Read XGM data.")
+        arr = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output', 'data.intensityTD')
+        arr = {'data': arr[self.train_indices,:self.pulses_per_train]}
+        self._write_to_h5(arr, 'DIAGNOSTICS')
 
-        # writing output to hdf5 file
-        with h5.File(self.file_name, 'r+') as f:
-            keys = list(self.h5_structure['DIAGNOSTICS'].keys())
-            for keyh5,item in zip(keys,[arr]):
-                f[keyh5] = item
 
     def _compute_saxs(self):
         """Perform the azimhuthal integration."""
@@ -551,13 +541,8 @@ class Dataset:
         # specify SAXS options
         saxs_opt = dict(
 	        mask=self.mask,
-                to_counts=False,
-                apply_internal_mask=False,
                 setup=self.setup,
-                client=self._client,
                 geom=self.agipd_geom,
-                adu_per_photon=65,
-                npulses=self.pulses_per_train,
                 last=self.ntrains,
                 max_trains=200,
                 )
@@ -565,30 +550,19 @@ class Dataset:
 
         # compute average
         print('Compute average SAXS')
-        out = azimuthal_integration(self.run,
+        out = azimuthal_integration(self._calibrator,
                 method='average', **saxs_opt)
-
-        # writing output to hdf5 file
-        with h5.File(self.file_name, 'r+') as f:
-            keys = list(self.h5_structure['SAXS'].keys())[:4]
-            for keyh5, item in zip(keys, out.values()):
-                f[keyh5] = item
-        del out
 
         # restart the client
         self._client.restart()
 
         # compute pulse resolved
         print('\nCompute pulse resolved SAXS')
-        out = azimuthal_integration(self.run,
-                method='single', **saxs_opt)
+        out.update(azimuthal_integration(self._calibrator,method='single',
+            **saxs_opt))
 
-        # writing output to hdf5 file
-        with h5.File(self.file_name, 'r+') as f:
-            keys = list(self.h5_structure['SAXS'].keys())[4:]
-            for keyh5,item in zip(keys,out.values()):
-                f[keyh5] = item
-        del out
+        self._write_to_h5(out, 'SAXS')
+
 
     def _compute_xpcs(self):
         """Calculate correlation functions."""
@@ -597,13 +571,8 @@ class Dataset:
         xpcs_opt = dict(
 	        mask=self.mask,
                 qmap = self.qmap,
-                to_counts=False,
-                apply_internal_mask=False,
                 setup=self.setup,
-                adu_per_photon=65,
                 last=self.ntrains,
-                client=self._client,
-                npulses=self.pulses_per_train,
                 dt=self.pulse_delay,
                 use_multitau=False,
                 rebin_g2=False,
@@ -613,14 +582,29 @@ class Dataset:
 
         # compute
         print('Compute XPCS correlation funcions.')
-        out = correlate(self.run, method='per_train', **xpcs_opt)
+        out = correlate(self._calibrator, method='per_train', **xpcs_opt)
+        self._write_to_h5(out, 'XPCS')
 
-        # writing output to hdf5 file
+
+    def _compute_dark(self):
+        """Averaging darks."""
+
+        # specify XPCS options
+        dark_opt = dict(axis='train',)
+        dark_opt.update(self._dark_opt)
+
+        # compute
+        print('Computing darks.')
+        out = average(self._calibrator, **dark_opt)
+        self._write_to_h5(out, 'DARK')
+
+
+    def _write_to_h5(self, output, method):
+        """Dump results in HDF5 file."""
         with h5.File(self.file_name, 'r+') as f:
-            keys = list(self.h5_structure['XPCS'].keys())
-            for keyh5,item in zip(keys,out.values()):
+            keys = list(self.h5_structure[method].keys())
+            for keyh5, item in zip(keys, output.values()):
                 f[keyh5] = item
-        del out
 
 
 def _get_parser():

@@ -25,14 +25,13 @@ from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
 
-def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
-	mask=None,  npulses=None, to_counts=False, apply_internal_mask=False,
-    setup=None, adu_per_photon=65, q_range=None, client=None, save_ttc=False,
-    h5filename=None, norm_xgm=False, **kwargs):
+def correlate(calibrator, method='per_train', last=None, qmap=None,
+    mask=None, setup=None, q_range=None, save_ttc=False, h5filename=None,
+    norm_xgm=False, chunks=None, **kwargs):
     """Calculate XPCS correlation functions of a run using dask.
 
     Args:
-        run (DataCollection): the run objection, e.g., created by RunDirectory.
+        calibrator (Calibrator): the data broker.
 
         last (int, optional): last train index. Defaults None. Set to small
             number for testing.
@@ -40,26 +39,14 @@ def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
         mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0. If None,
             no pixel is masked.
 
-        npulses (int): Number of pulses per pulse train. Defaults to None.
-
-        to_count (bool, optional): Convert the adus to photon counts based on
-            thresholding and the value of adu_per_photon.
-
-        apply_internal_mask (bool, optional): Read and apply the mask calculated
-            from the calibration pipeline. Defaults to True.
-
         setup ((Xana.Setup), optional): Xana setupfile. Defaults to None.
             If str, include path in the filename. Otherwise provide Xana Setup
             instance.
 
-        adu_per_photon ((int,float), optional): number of ADUs per photon.
-
-        client (dask.distributed.Client): Defaults to None.
-
         qrange (dict): Information on the q-bins. Should contain the keys:
-            * q_first
-            * q_last
-            * nsteps
+            * q_first, q_last, nsteps
+            or
+            * q_first, q_last, qwidth
 
     Returns:
         dict: Dictionary containing the results depending on the method it
@@ -100,17 +87,10 @@ def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
         elif return_ == 'ttc':
             pass
 
-    # getting the data
-    agp = AGIPD1M(run, min_modules=16)
-    arr = agp.get_dask_array('image.data')
-    print("Got dask array", flush=True)
+    if chunks is None:
+        chunks = {'per_train': {'trainId': 1, 'train_data': 16*512*128}}
 
-    # coords are module, dim_0, dim_1, trainId, pulseId after unstack
-    arr = arr.unstack()
-
-    # select pulses and skip the first one
-    arr = arr[..., :last, first_cell:npulses+first_cell]
-    npulses = arr.shape[-1]
+    arr = calibrator._get_data(last_train=last)
 
     if norm_xgm:
         with h5py.File(h5filename, 'r') as f:
@@ -120,23 +100,24 @@ def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
         print(f"Read XGM data from {h5filename} for normalization")
         arr = arr / xgm[None, None, None, ...]
 
-    if to_counts:
-        arr.data = np.floor((arr.data + 0.5*adu_per_photon) / adu_per_photon)
-        arr.data[arr.data<0] = 0
-        # arr.data.astype('float32')
-
-    if apply_internal_mask:
-        mask_int = agp.get_dask_array('image.mask')
-        mask_int = mask_int.unstack()
-        mask_int = mask_int[..., :last, first_cell:npulses+first_cell]
-        arr = arr.where((mask_int.data <= 0) | (mask_int.data>=8))
-        # mask[(mask_int.data > 0) & (mask_int.data<8)] = 0
-
+    arr = arr.unstack()
     arr = arr.stack(train_data=('pulseId', 'module', 'dim_0', 'dim_1'))
-    arr = arr.chunk({'trainId': 1, 'train_data': 128*512*128})
+    arr = arr.chunk(chunks['per_train'])
+    npulses = arr.shape[1] // (16*512*128)
 
-    qmin, qmax, n = [q_range[x] for x in ['q_first', 'q_last', 'nsteps']]
-    qarr = np.linspace(qmin,qmax,n)
+    if 'nsteps' in q_range:
+        qarr = np.linspace(q_range['q_first'],
+                           q_range['q_last'],
+                           q_range['nsteps'])
+    elif 'qwidth' in q_range:
+        qarr = np.arange(q_range['q_first'],
+                         q_range['q_last'],
+                         q_range['qwidth'])
+    else:
+        raise ValueError("Could not define q-values. "
+                         "q_range not defined properly: "
+                         f"{q_range}")
+
     qmap_2d = qmap.reshape(16*512,128)
     mask_2d = mask.reshape(16*512,128)
 
@@ -148,10 +129,12 @@ def correlate(run, method='per_train', last=None, qmap=None, first_cell=1,
         dim = arr.get_axis_num("train_data")
         out = da.apply_along_axis(calculate_correlation, dim, arr.data,
             dtype='float32', shape=corf.shape, return_='corf', **kwargs)
-        out = client.persist(out)
+        out = out.persist()
         progress(out)
 
-        savdict = {"q(nm-1)":qv, "t(s)":t, "corf":np.array(out)}
+        savdict = {"q(nm-1)": qv,
+                   "t(s)": t,
+                   "corf": out.compute()}
         del out
         return savdict
     else:
