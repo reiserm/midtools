@@ -51,9 +51,11 @@ I put two example setupfiles in the `tests` folder.
 - `tests/setup_dask_good.yml` contains parameter that work (probably not optimum)
 - `tests/setup_dask_bad.yml` crushes especially when applying midtools to large runs.
 
+Additional cluster settings can be found in the class definition in 
+`midtools/dataset.py:427`.
+
 Even when the program finishes without errors, the log files contain GIL warnings
 complaining about too big chunks.
-
 I reproduced the described behavior by running
 
 ```sh
@@ -65,6 +67,11 @@ for analyzing the first 100 trains of run 201. Each train contains 100 pulses
 per train (-ppt). Again the `11` means, we would like to apply both analysis
 methods.
 
+You might need to increase the limit for files opened at the same time. 
+
+```sh
+ulimit -n 4096
+```
 
 
 
