@@ -31,6 +31,7 @@ from Xana import Setup
 from .azimuthal_integration import azimuthal_integration
 from .correlations import correlate
 from .average import average
+from .statistics import statistics
 from .corrections import Calibrator
 
 from functools import reduce
@@ -39,7 +40,8 @@ import pdb
 
 class Dataset:
 
-    METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS', 'FRAMES', 'DARK']
+    METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS', 'FRAMES',
+               'DARK', 'STATISTICS']
 
     def __init__(self, setupfile, analysis='00', last_train=1e6,
             run_number=None, dark_run_number=None, pulses_per_train=500,
@@ -223,8 +225,8 @@ class Dataset:
                 "/dark/variance": [None, None],
             },
             'STATISTICS': {
-                "/pulse_resolved/histogram": [None, None],
                 "/pulse_resolved/centers": [None, None],
+                "/pulse_resolved/counts": [None, None],
             },
         }
         return h5_structure
@@ -618,23 +620,22 @@ class Dataset:
         self._write_to_h5(out, 'DARK')
 
 
-    # def _compute_statistics(self):
-    #     """Perform the azimhuthal integration."""
+    def _compute_statistics(self):
+        """Perform the azimhuthal integration."""
 
-    #     statistics_opt = dict(
-    #             mask=self.mask,
-    #             setup=self.setup,
-    #             geom=self.agipd_geom,
-    #             last=self.ntrains,
-    #             max_trains=200,
-    #             )
-    #     statistics_opt.update(self._statistics_opt)
+        statistics_opt = dict(
+	        mask=self.mask,
+                setup=self.setup,
+                geom=self.agipd_geom,
+                last=self.ntrains,
+                max_trains=200,
+                )
+        statistics_opt.update(self._statistics_opt)
 
-    #     print('\nCompute pulse resolved statistics')
-    #     out = azimuthal_integration(self._calibrator, method='single',
-    #             **saxs_opt)
+        print('\nCompute pulse resolved statistics')
+        out = statistics(self._calibrator, **statistics_opt)
 
-    #     self._write_to_h5(out, 'SAXS')
+        self._write_to_h5(out, 'STATISTICS')
 
 
     def _write_to_h5(self, output, method):

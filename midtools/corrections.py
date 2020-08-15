@@ -124,8 +124,9 @@ class Calibrator:
         if self.corrections['apply_internal_mask']:
             arr = self._apply_internal_mask(agp, arr, train_slice, pulse_slice)
 
-        arr = arr.stack(train_pulse=('trainId', 'pulseId'),
-                        pixels=('module', 'dim_0', 'dim_1'))
+        arr = arr.stack(train_pulse=('trainId', 'pulseId'))
+        arr = arr.where(self.mask[..., None])
+        arr = arr.stack(pixels=('module', 'dim_0', 'dim_1'))
 
         # apply corrections
         for correction, options in self.corrections.items():
@@ -201,9 +202,7 @@ class Calibrator:
 
     def _asic_commonmode(self, arr):
         """Apply commonmode on asic level."""
-        arr = arr.unstack('pixels')
-        arr = arr.where(self.mask[None, ...])
-        arr = arr.unstack('train_pulse')
+        arr = arr.unstack()
         arr = arr.stack(train_pulse_module=['trainId', 'pulseId', 'module'])
         arr = arr.chunk({'train_pulse_module': 1024})
 
