@@ -2,15 +2,18 @@ import numpy as np
 from extra_data.components import AGIPD1M
 from .average import average
 import dask.array as da
+import xarray as xr
 
+import pdb
 
 class Calibrator:
     """Calibrate AGIPD dataset"""
 
     def __init__(self, run, last_train=10_000, pulses_per_train=100,
-            first_cell=1, train_step=1, pulse_step=1, dark_run_number=None,
+            first_cell=1, train_step=1, pulse_step=1,
+            dark_run_number=None, mask=None, adu_per_photon=62,
             apply_internal_mask=False, dropletize=False, stripes=None,
-            baseline=False,):
+            baseline=False, asic_commonmode=False,):
 
         #: DataCollection: e.g., returned from extra_data.RunDirectory
         self.run = run
@@ -19,6 +22,9 @@ class Calibrator:
         self.first_cell = first_cell
         self.train_step = train_step
         self.pulse_step = pulse_step
+
+        self.mask = mask
+        self.adu_per_photon = adu_per_photon
 
         self.is_proc = None
         #: (str, None): Directory of dark run. Determined by dark_run_number
@@ -31,8 +37,9 @@ class Calibrator:
         self.dark_run_number = dark_run_number
 
         self.corrections = {'apply_internal_mask': apply_internal_mask,
-                            'dropletize': dropletize,
-                            'baseline': baseline}
+                            'baseline': baseline,
+                            'asic_commonmode': asic_commonmode,
+                            'dropletize': dropletize,}
 
         self.stripes = stripes
 
@@ -114,12 +121,15 @@ class Calibrator:
             arr = arr.rename({'dim_1': 'dim_0',
                               'dim_2': 'dim_1'})
 
+        if self.corrections['apply_internal_mask']:
+            arr = self._apply_internal_mask(agp, arr, train_slice, pulse_slice)
+
         arr = arr.stack(train_pulse=('trainId', 'pulseId'),
                         pixels=('module', 'dim_0', 'dim_1'))
 
         # apply corrections
         for correction, options in self.corrections.items():
-            if bool(options):
+            if bool(options) and 'apply' not in correction:
                 print(f"Apply correction: {correction}")
                 arr = getattr(self, "_" + correction)(arr)
 
@@ -129,9 +139,9 @@ class Calibrator:
 
     def _dropletize(self, arr):
         """Convert adus to photon counts."""
-        arr = arr.ufunc.floor(
-            (arr.data + 0.5*self.adu_per_photon) / self.adu_per_photon)
-        arr[arr < 0] = 0
+        arr = np.floor(
+            (arr + .5*self.adu_per_photon) / self.adu_per_photon)
+        arr = arr.where(arr >= 0, other=0)
         return arr
 
 
@@ -147,7 +157,7 @@ class Calibrator:
             mask_int = mask_int.rename({'dim_1': 'dim_0',
                                         'dim_2': 'dim_1'})
 
-        arr = arr.where((mask_int.data <= 0) | (mask_int.data>=8))
+        arr = arr.where((mask_int.data <= 0) | (mask_int.data >= 8))
         return arr
 
 
@@ -162,46 +172,60 @@ class Calibrator:
 
 
     @staticmethod
-    def _module2asics(data, reverse=False):
+    def _to_asics(data, reverse=False):
         """convert module to asics and vise versa"""
         nrows = ncols = 64
         if data.ndim == 3:
             if not reverse:
-                return data.reshape(-1, 8, nrows, 2, ncols).swapaxes(2,3).reshape(-1, 16, nrows, ncols)
+                return (data
+                        .reshape(-1, 8, nrows, 2, ncols)
+                        .swapaxes(2, 3)
+                        .reshape(-1, 16, nrows, ncols))
             else:
-                return data.reshape(-1, 8, 2, nrows, ncols).swapaxes(2,3).reshape(-1,512,128)
+                return (data
+                        .reshape(-1, 8, 2, nrows, ncols)
+                        .swapaxes(2, 3)
+                        .reshape(-1, 512, 128))
         elif data.ndim == 2:
             if not reverse:
-                return data.reshape(8, nrows, 2, ncols).swapaxes(1,2).reshape(16, nrows, ncols)
+                return (data
+                        .reshape(8, nrows, 2, ncols)
+                        .swapaxes(1, 2)
+                        .reshape(16, nrows, ncols))
             else:
-                return data.reshape(8, 2, nrows, ncols).swapaxes(1,2).reshape(512,128)
+                return (data
+                        .reshape(8, 2, nrows, ncols)
+                        .swapaxes(1, 2)
+                        .reshape(512,128))
 
 
-    def _commonmode_module(self, module, range_=(-30, 31)):
-        """find the zero photon peak and center it around zeros."""
-        asics = self.module2asics(module)
-        for asic in asics:
-            h, e = np.histogram(asic, bins=np.arange(*range_))
-            asic -= e[np.argmax(h)]
-        return self.module2asics(asics, reverse=True)
+    def _asic_commonmode(self, arr):
+        """Apply commonmode on asic level."""
+        arr = arr.unstack('pixels')
+        arr = arr.where(self.mask[None, ...])
+        arr = arr.unstack('train_pulse')
+        arr = arr.stack(train_pulse_module=['trainId', 'pulseId', 'module'])
+        arr = arr.chunk({'train_pulse_module': 1024})
+
+        arr = arr.assign_coords(asc_0=('dim_0', np.repeat(np.arange(1,9), 64)),
+                                  asc_1=('dim_1', np.repeat([-1, 1], 64)))
+        arr = arr.assign_coords(asc=arr.asc_0 * arr.asc_1)
+        asics = arr.groupby('asc')
+
+        asic_median = asics.median(skipna=True)
+        asic_median = asic_median.where(asic_median < self.adu_per_photon/2,
+                                        other=0)
+        asics -= asic_median
+
+        arr = asics.drop(('asc', 'asc_0', 'asc_1'))
+        arr = arr.unstack()
+        arr = arr.stack(train_pulse=('trainId', 'pulseId'),
+                pixels=('module', 'dim_0', 'dim_1'))
+        return arr
 
 
-    def _commonmode_frame(self, frame):
-        """apply commonmode correction to each module of a frame"""
-        print(frame)
-        is_flat = True if frame.ndim == 1 else False
-        if is_flat:
-            frame = frame.reshape(16, 512, 128)
-        for i, module in enumerate(frame):
-            frame[i] = self.commonmode_module(module)
-        if is_flat:
-            frame = frame.flatten()
-        return frame
 
 
-    def _commonmode_series(self, series):
-        """apply commonmode to all frames of a train"""
-        for i, frame in enumerate(series):
-            series[i] = self.commonmode_frame(frame)
-        return series
+
+
 

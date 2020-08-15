@@ -19,6 +19,7 @@ from dask.diagnostics import ProgressBar
 
 import pdb
 
+
 def average(calibrator, last=None, chunks=None, axis='train_pulse', **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
@@ -46,9 +47,11 @@ def average(calibrator, last=None, chunks=None, axis='train_pulse', **kwargs):
 
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)
+
     average = arr.mean(axis, skipna=True, keepdims=True).persist()
     progress(arr)
     average = np.squeeze(average.values.reshape(-1, 16, 512, 128))
+
     variance = arr.var(axis, skipna=True, keepdims=True).persist()
     progress(variance)
     variance = np.squeeze(variance.values.reshape(-1, 16, 512, 128))

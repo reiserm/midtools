@@ -54,15 +54,17 @@ class Dataset:
                 where a one means to perform the analysis and a zero means to
                 omit the analysis. The analysis types are:
 
-                +-------+----------------------------+
-                | flags | analysis                   |
-                +=======+============================+
-                |  100  | SAXS azimuthal integration |
-                +-------+----------------------------+
-                |  010  | XPCS correlation functions |
-                +-------+----------------------------+
-                |  001  | Average frames             |
-                +-------+----------------------------+
+                +--------+----------------------------+
+                | flags- | analysis                   |
+                +========+============================+
+                |  1000  | SAXS azimuthal integration |
+                +--------+----------------------------+
+                |  0100  | XPCS correlation functions |
+                +--------+----------------------------+
+                |  0010  | Average frames             |
+                +--------+----------------------------+
+                |  0001  | Compute darks              |
+                +--------+----------------------------+
 
             last_train (int, optional): Index of last train to analyze. If not
                 provided, all trains are processed.
@@ -179,6 +181,7 @@ class Dataset:
                                       train_step=train_step,
                                       pulse_step=pulse_step,
                                       dark_run_number=dark_run_number,
+                                      mask=self.mask.copy(),
                                       **self._calib_opt)
 
         # placeholder attributes
@@ -191,29 +194,37 @@ class Dataset:
         """
         h5_structure = {
            'META': {
-                "/identifiers/pulses_per_train":[(1,),'int8'],
-                "/identifiers/pulse_ids":[(self.pulses_per_train,), 'int8'],
-                "/identifiers/train_ids":[(self.ntrains,), 'int16'],
-                "/identifiers/train_indices":[(self.ntrains,), 'int8'],
+                "/identifiers/pulses_per_train": [(1,), 'int8'],
+                "/identifiers/pulse_ids": [(self.pulses_per_train,), 'int8'],
+                "/identifiers/train_ids": [(self.ntrains,), 'int16'],
+                "/identifiers/train_indices": [(self.ntrains,), 'int8'],
             },
             'DIAGNOSTICS': {
                 "/pulse_resolved/xgm/energy": [
                     (self.ntrains,self.pulses_per_train), 'float32', ],
             },
             'SAXS': {
-                "/pulse_resolved/azimuthal_intensity/q":[(500,), 'float32'],
-                "/pulse_resolved/azimuthal_intensity/I":[
-                    (self.ntrains*self.pulses_per_train,500),'float32',],
+                "/pulse_resolved/azimuthal_intensity/q": [(500,), 'float32'],
+                "/pulse_resolved/azimuthal_intensity/I": [
+                    (self.ntrains*self.pulses_per_train, 500), 'float32',],
             },
             'XPCS': {
-                "/train_resolved/correlation/q":[None,None],
-                "/train_resolved/correlation/t":[None,None],
-                "/train_resolved/correlation/g2":[None,None],
+                "/train_resolved/correlation/q": [None, None],
+                "/train_resolved/correlation/t": [None, None],
+                "/train_resolved/correlation/g2": [None, None],
             },
             'FRAMES': {
-                "/average/intensity": [None,None],
-                "/average/variance":[None,None],
-                "/average/image_2d":[None, 'float32'],
+                "/average/intensity": [None, None],
+                "/average/variance": [None, None],
+                "/average/image_2d": [None, 'float32'],
+            },
+            'DARK': {
+                "/dark/intensity": [None, None],
+                "/dark/variance": [None, None],
+            },
+            'STATISTICS': {
+                "/pulse_resolved/histogram": [None, None],
+                "/pulse_resolved/centers": [None, None],
             },
         }
         return h5_structure
@@ -428,16 +439,16 @@ class Dataset:
         """Initialize the slurm cluster"""
 
         opt = self._slurm_opt
-        nprocs = opt.pop('nprocs', 4)
-        threads_per_process = 6
-        nprocs = 72//threads_per_process
+        # nprocs = 72//threads_per_process
+        nprocs = opt.pop('nprocs', 12)
+        threads_per_process = opt.pop('cores', nprocs)
         njobs = opt.pop('njobs', min(max(int(self.ntrains/64), 4), 12))
         print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
         self._cluster = SLURMCluster(
             queue=opt.get('partition',opt.pop('partition', 'exfel')),
             processes=nprocs,
-            cores=nprocs,  # *threads_per_process,
-            memory='768GB',
+            cores=threads_per_process,
+            memory=opt.pop('memory', '768GB'),
             log_directory='./dask_log/',
             local_directory='/scratch/',
             nanny=True,
@@ -544,7 +555,6 @@ class Dataset:
     def _compute_saxs(self):
         """Perform the azimhuthal integration."""
 
-        # specify SAXS options
         saxs_opt = dict(
 	        mask=self.mask,
                 setup=self.setup,
@@ -554,15 +564,6 @@ class Dataset:
                 )
         saxs_opt.update(self._saxs_opt)
 
-        # compute average
-        # print('Compute average SAXS')
-        # out = azimuthal_integration(self._calibrator,
-        #         method='average', **saxs_opt)
-
-        # # restart the client
-        # self._client.restart()
-
-        # compute pulse resolved
         print('\nCompute pulse resolved SAXS')
         out = azimuthal_integration(self._calibrator, method='single',
                 **saxs_opt)
@@ -573,7 +574,6 @@ class Dataset:
     def _compute_xpcs(self):
         """Calculate correlation functions."""
 
-        # specify XPCS options
         xpcs_opt = dict(
 	        mask=self.mask,
                 qmap = self.qmap,
@@ -586,19 +586,17 @@ class Dataset:
                 )
         xpcs_opt.update(self._xpcs_opt)
 
-        # compute
         print('Compute XPCS correlation funcions.')
         out = correlate(self._calibrator, method='per_train', **xpcs_opt)
         self._write_to_h5(out, 'XPCS')
 
 
     def _compute_frames(self):
-        """Averaging darks."""
+        """Averaging frames."""
 
         frames_opt = dict(axis='train')
         frames_opt.update(self._frames_opt)
 
-        # compute
         print('Computing frames.')
         out = average(self._calibrator, **frames_opt)
 
@@ -606,6 +604,37 @@ class Dataset:
         out.update({'image2d': img2d})
 
         self._write_to_h5(out, 'FRAMES')
+
+
+    def _compute_dark(self):
+        """Averaging darks."""
+
+        dark_opt = dict(axis='train')
+        dark_opt.update(self._dark_opt)
+
+        print('Computing darks.')
+        out = average(self._calibrator, **dark_opt)
+
+        self._write_to_h5(out, 'DARK')
+
+
+    # def _compute_statistics(self):
+    #     """Perform the azimhuthal integration."""
+
+    #     statistics_opt = dict(
+    #             mask=self.mask,
+    #             setup=self.setup,
+    #             geom=self.agipd_geom,
+    #             last=self.ntrains,
+    #             max_trains=200,
+    #             )
+    #     statistics_opt.update(self._statistics_opt)
+
+    #     print('\nCompute pulse resolved statistics')
+    #     out = azimuthal_integration(self._calibrator, method='single',
+    #             **saxs_opt)
+
+    #     self._write_to_h5(out, 'SAXS')
 
 
     def _write_to_h5(self, output, method):
