@@ -514,6 +514,8 @@ class Dataset:
                     if method not in ['META', 'DIAGNOSTICS'] and not self._cluster_running:
                         self._start_slurm_cluster()
                         self._cluster_running = True
+                        if self._calibrator.data is None:
+                            self._calibrator._get_data()
                     print(f"\n{method:-^50}")
                     getattr(self,
                             f"_compute_{method.lower()}")()

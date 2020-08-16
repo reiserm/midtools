@@ -17,11 +17,14 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
+from .corrections import _asic_commonmode_worker
+
 import pdb
 
+
 def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
-        max_trains=10_000, chunks=None, hist_range=(-200, 800), savname=None,
-        **kwargs):
+        max_trains=10_000, chunks=None, hist_range=(-200, 800), nbins=500,
+        savname=None, **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
@@ -39,6 +42,8 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
 
         hist_range(tuple, optional): tuple with lower and upper histogram
             boundaries. Defaults to (-200, 800)
+
+        nbins(int, optional): number of bins. Defaults to 500.
 
         savname (str, optional): Prefix of filename under which the results are
             saved automatically. Defaults to azimuthal_integration. An
@@ -60,8 +65,11 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
 
+        if do_asic_commonmode:
+            data = _asic_commonmode_worker(data, mask, adu_per_photon)
+
         ind = np.isfinite(data)
-        counts, edges = np.histogram(data[ind], bins=500,
+        counts, edges = np.histogram(data[ind], bins=nbins,
                 range=hist_range)
 
         if return_centers:
@@ -75,13 +83,15 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
     if chunks is None:
         chunks = {'train_pulse': 128, 'pixels': 128*512}
 
-    arr = calibrator._get_data(last_train=last)
+    arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
+    adu_per_photon = calibrator.adu_per_photon
+    do_asic_commonmode = calibrator.worker_corrections['asic_commonmode']
 
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)
-    pdb.set_trace()
-    centers = statistics_worker(arr[0], return_centers=True)[0]
+    centers = np.linspace(*hist_range, num=nbins+1)
+    centers = centers[:-1] + (centers[1] - centers[0]) / 2
 
     dim = arr.get_axis_num("pixels")
     arr = da.apply_along_axis(statistics_worker, dim, \

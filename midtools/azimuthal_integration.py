@@ -17,6 +17,8 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
+from .corrections import _asic_commonmode_worker
+
 import pdb
 
 def azimuthal_integration(calibrator, method='average', last=None,
@@ -66,6 +68,8 @@ def azimuthal_integration(calibrator, method='average', last=None,
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
 
+        if do_asic_commonmode:
+            data = _asic_commonmode_worker(data, mask, adu_per_photon)
         # do azimuthal integration
         wnan = np.isnan(data)
         q, I = ai.integrate1d(data.reshape(8192,128),
@@ -95,8 +99,10 @@ def azimuthal_integration(calibrator, method='average', last=None,
     elif method == 'single':
         train_step = (last // max_trains) + 1
 
-    arr = calibrator._get_data(last_train=last, train_step=train_step)
-    npulses = arr.shape[-1]
+    arr = calibrator.data.copy()
+    npulses = np.unique(arr.pulseId.values).size
+    adu_per_photon = calibrator.adu_per_photon
+    do_asic_commonmode = calibrator.worker_corrections['asic_commonmode']
 
     print("Start computation", flush=True)
     if method == 'average':

@@ -33,7 +33,8 @@ def average(calibrator, last=None, chunks=None, axis='train_pulse', **kwargs):
     if 'pulse' in axis:
         axisl.append('pulseId')
 
-    arr = calibrator._get_data(last_train=last)
+    arr = calibrator.data.copy()
+    npulses = np.unique(arr.pulseId.values).size
 
     if len(axisl) == 1:
         axis = axisl[0]

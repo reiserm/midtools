@@ -24,6 +24,8 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
+from .corrections import _asic_commonmode_worker
+
 
 def correlate(calibrator, method='per_train', last=None, qmap=None,
     mask=None, setup=None, q_range=None, save_ttc=False, h5filename=None,
@@ -63,7 +65,10 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
 
-        data = data.reshape(npulses,8192,128)
+        if do_asic_commonmode:
+            data = _asic_commonmode_worker(data, mask, adu_per_photon)
+
+        data = data.reshape(npulses, 8192, 128)
         wnan = np.isnan(np.sum(data, axis=0))
         xpcs_mask = mask_2d & ~wnan.reshape(8192,128)
 
@@ -72,6 +77,7 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
 
         # get only the q-bins in range
         qv = qarr[:len(rois)] + (qarr[1] - qarr[0])/2.
+
 
         out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False,
                 **kwargs)
@@ -90,7 +96,10 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     if chunks is None:
         chunks = {'per_train': {'trainId': 1, 'train_data': 16*512*128}}
 
-    arr = calibrator._get_data(last_train=last)
+    arr = calibrator.data.copy()
+    npulses = np.unique(arr.pulseId.values).size
+    adu_per_photon = calibrator.adu_per_photon
+    do_asic_commonmode = calibrator.worker_corrections['asic_commonmode']
 
     if norm_xgm:
         with h5py.File(h5filename, 'r') as f:
