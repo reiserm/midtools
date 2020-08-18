@@ -68,7 +68,7 @@ class Dataset:
                 |  00010  | Compute darks              |
                 +---------+----------------------------+
                 |  00001  | Compute statistics         |
-                +--------+-----------------------------+
+                +---------+----------------------------+
 
             last_train (int, optional): Index of last train to analyze. If not
                 provided, all trains are processed.
