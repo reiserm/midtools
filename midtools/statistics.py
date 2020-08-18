@@ -23,7 +23,7 @@ import pdb
 
 
 def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
-        max_trains=10_000, chunks=None, hist_range=(-200, 800), nbins=500,
+        max_trains=10_000, chunks=None, hist_range=None, nbins=None,
         savname=None, **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
@@ -41,9 +41,10 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
         geom (geometry, optional): AGIPD1M geometry.
 
         hist_range(tuple, optional): tuple with lower and upper histogram
-            boundaries. Defaults to (-200, 800)
+            boundaries. With dropletizing (-.5, 10.5), without (-200, 800).
 
-        nbins(int, optional): number of bins. Defaults to 500.
+        nbins(int, optional): number of bins.
+            With dropletizing 11, without 500.
 
         savname (str, optional): Prefix of filename under which the results are
             saved automatically. Defaults to azimuthal_integration. An
@@ -79,6 +80,17 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
             return counts
 
     t_start = time()
+
+    if hist_range is None:
+        if calibrator.corrections['dropletize']:
+            hist_range = (-.5, 10.5)
+        else:
+            hist_range = (-200, 800)
+    if nbins is None
+        if calibrator.corrections['dropletize']:
+            nbins = 11
+        else:
+            nbins = 500
 
     if chunks is None:
         chunks = {'train_pulse': 128, 'pixels': 128*512}

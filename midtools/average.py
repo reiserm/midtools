@@ -20,7 +20,8 @@ from dask.diagnostics import ProgressBar
 import pdb
 
 
-def average(calibrator, last=None, chunks=None, axis='train_pulse', **kwargs):
+def average(calibrator, last_train=None, chunks=None, axis='train_pulse',
+            **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
@@ -39,12 +40,21 @@ def average(calibrator, last=None, chunks=None, axis='train_pulse', **kwargs):
     if len(axisl) == 1:
         axis = axisl[0]
         arr = arr.unstack('train_pulse')
+        arr = arr[..., arr.trainId < arr.trainId[last_train], :]
         arr = arr.transpose(axis, ..., 'pixels')
     if len(axisl) == 2:
         axis = 'train_pulse'
+        arr = arr[:last_train * npulses]
 
     if chunks is None:
         chunks = {axis: 128}
+
+    if calibrator.worker_corrections['asic_commonmode']:
+        arr = calibrator._asic_commonmode_xarray(arr)
+        if len(axisl) == 1:
+            arr = arr.unstack('train_pulse')
+            arr = arr.stack(pixels=('module', 'dim_0', 'dim_1'))
+            arr = arr.transpose(axis, ..., 'pixels')
 
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)

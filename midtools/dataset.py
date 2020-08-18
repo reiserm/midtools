@@ -56,17 +56,19 @@ class Dataset:
                 where a one means to perform the analysis and a zero means to
                 omit the analysis. The analysis types are:
 
-                +--------+----------------------------+
-                | flags- | analysis                   |
-                +========+============================+
-                |  1000  | SAXS azimuthal integration |
-                +--------+----------------------------+
-                |  0100  | XPCS correlation functions |
-                +--------+----------------------------+
-                |  0010  | Average frames             |
-                +--------+----------------------------+
-                |  0001  | Compute darks              |
-                +--------+----------------------------+
+                +--------+-----------------------------+
+                | flags   | analysis                   |
+                +=========+============================+
+                |  10000  | SAXS azimuthal integration |
+                +---------+----------------------------+
+                |  01000  | XPCS correlation functions |
+                +---------+----------------------------+
+                |  00100  | Average frames             |
+                +---------+----------------------------+
+                |  00010  | Compute darks              |
+                +---------+----------------------------+
+                |  00001  | Compute statistics         |
+                +--------+-----------------------------+
 
             last_train (int, optional): Index of last train to analyze. If not
                 provided, all trains are processed.
@@ -204,6 +206,10 @@ class Dataset:
             'DIAGNOSTICS': {
                 "/pulse_resolved/xgm/energy": [
                     (self.ntrains,self.pulses_per_train), 'float32', ],
+                "/pulse_resolved/xgm/pointing_x": [
+                    (self.ntrains,self.pulses_per_train), 'float32', ],
+                "/pulse_resolved/xgm/pointing_y": [
+                    (self.ntrains,self.pulses_per_train), 'float32', ],
             },
             'SAXS': {
                 "/pulse_resolved/azimuthal_intensity/q": [(500,), 'float32'],
@@ -225,8 +231,8 @@ class Dataset:
                 "/dark/variance": [None, None],
             },
             'STATISTICS': {
-                "/pulse_resolved/centers": [None, None],
-                "/pulse_resolved/counts": [None, None],
+                "/pulse_resolved/statistics/centers": [None, None],
+                "/pulse_resolved/statistics/counts": [None, None],
             },
         }
         return h5_structure
@@ -454,8 +460,8 @@ class Dataset:
             log_directory='./dask_log/',
             local_directory='/scratch/',
             nanny=True,
-            death_timeout=3600,
-            walltime="01:00:00",
+            death_timeout=3600*2,
+            walltime="03:00:00",
             interface='ib0',
         )
 
@@ -550,9 +556,15 @@ class Dataset:
     def _compute_diagnostics(self):
         """Read diagnostic data. """
         print(f"Read XGM data.")
-        arr = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                 'data.intensityTD')
-        arr = {'data': arr[self.train_indices,:self.pulses_per_train]}
+        intensity = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
+                                       'data.intensityTD')
+        dx = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
+                                'data.xTD')
+        dy = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
+                                'data.yTD')
+        arr = {'data': intensity[self.train_indices,:self.pulses_per_train],
+               'dx': dx[self.train_indices,:self.pulses_per_train],
+               'dy': dy[self.train_indices,:self.pulses_per_train]}
         self._write_to_h5(arr, 'DIAGNOSTICS')
 
 
@@ -584,7 +596,7 @@ class Dataset:
                 setup=self.setup,
                 last=self.ntrains,
                 dt=self.pulse_delay,
-                use_multitau=False,
+                use_multitau=True,
                 rebin_g2=False,
                 h5filename=self.file_name,
                 )
@@ -598,7 +610,8 @@ class Dataset:
     def _compute_frames(self):
         """Averaging frames."""
 
-        frames_opt = dict(axis='train')
+        frames_opt = dict(axis='pulse',
+                          last_train=self.ntrains)
         frames_opt.update(self._frames_opt)
 
         print('Computing frames.')

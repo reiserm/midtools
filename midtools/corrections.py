@@ -9,7 +9,7 @@ import pdb
 
 class Calibrator:
     """Calibrate AGIPD dataset"""
-    adu_per_photon = 58
+    adu_per_photon = 66
     mask = np.ones((16, 512, 128), 'bool')
     worker_corrections = {'asic_commonmode': False}
 

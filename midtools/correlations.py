@@ -78,7 +78,6 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
         # get only the q-bins in range
         qv = qarr[:len(rois)] + (qarr[1] - qarr[0])/2.
 
-
         out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False,
                 **kwargs)
 
