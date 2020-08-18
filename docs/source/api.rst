@@ -6,7 +6,7 @@ API
 Concept
 -------
 
-A :class:`midtools.Dataset` is the basis of :mod:`midtools`. Amongst others,
+:class:`midtools.Dataset` is the basis of :mod:`midtools`. Amongst others,
 it:
 
 * provides the command line interface,

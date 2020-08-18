@@ -86,7 +86,7 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
             hist_range = (-.5, 10.5)
         else:
             hist_range = (-200, 800)
-    if nbins is None
+    if nbins is None:
         if calibrator.corrections['dropletize']:
             nbins = 11
         else:

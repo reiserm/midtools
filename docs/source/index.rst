@@ -24,7 +24,7 @@ data and store the results in HDF5-files. Basic information are provided under
    tasks.rst
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :hidden:
    :caption: User Interface
 
