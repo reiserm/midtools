@@ -181,6 +181,7 @@ class Dataset:
 
         #: Calibrator: Calibrator instance for data pre-processing
         self._calibrator = Calibrator(self.run,
+                                      pulses_per_train=self.pulses_per_train,
                                       last_train=self.last_train_idx,
                                       train_step=train_step,
                                       pulse_step=pulse_step,
