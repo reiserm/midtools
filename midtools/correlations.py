@@ -24,7 +24,7 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
-from .corrections import _asic_commonmode_worker
+from .corrections import _asic_commonmode_worker, _dropletize_worker
 
 
 def correlate(calibrator, method='per_train', last=None, qmap=None,
@@ -56,7 +56,8 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
             * 'corf': the xpcs correlation function
     """
 
-    def calculate_correlation(data, return_='all',  **kwargs):
+    def calculate_correlation(data, return_='all', adu_per_photon=58,
+                              worker_corections=False, **kwargs):
         # Check data type
         if isinstance(data, np.ndarray):
             pass
@@ -65,8 +66,11 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
 
-        if do_asic_commonmode:
-            data = _asic_commonmode_worker(data, mask, adu_per_photon)
+        if bool(worker_corections):
+            if 'asic_commonmode' in worker_corections:
+                data = _asic_commonmode_worker(data, mask, adu_per_photon)
+            if 'dropletize' in worker_corections:
+                data = _dropletize_worker(data, adu_per_photon)
 
         data = data.reshape(npulses, 8192, 128)
         wnan = np.isnan(np.sum(data, axis=0))
@@ -98,7 +102,8 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
     adu_per_photon = calibrator.adu_per_photon
-    do_asic_commonmode = calibrator.worker_corrections['asic_commonmode']
+    worker_corections = list(dict(filter(lambda x: x[1],
+        calibrator.worker_corrections.items())).keys())
 
     if norm_xgm:
         with h5py.File(h5filename, 'r') as f:
@@ -136,7 +141,10 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
 
         dim = arr.get_axis_num("train_data")
         out = da.apply_along_axis(calculate_correlation, dim, arr.data,
-            dtype='float32', shape=corf.shape, return_='corf', **kwargs)
+            dtype='float32', shape=corf.shape, return_='corf',
+            worker_corections=worker_corections, adu_per_photon=adu_per_photon,
+            **kwargs)
+
         out = out.persist()
         progress(out)
 

@@ -82,12 +82,12 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
     t_start = time()
 
     if hist_range is None:
-        if calibrator.corrections['dropletize']:
+        if calibrator.corrections.pop('dropletize', False):
             hist_range = (-.5, 10.5)
         else:
             hist_range = (-200, 800)
     if nbins is None:
-        if calibrator.corrections['dropletize']:
+        if calibrator.corrections.pop('dropletize', False):
             nbins = 11
         else:
             nbins = 500

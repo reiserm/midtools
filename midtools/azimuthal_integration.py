@@ -17,7 +17,7 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
-from .corrections import _asic_commonmode_worker
+from .corrections import _asic_commonmode_worker, _dropletize_worker
 
 import pdb
 
@@ -59,7 +59,8 @@ def azimuthal_integration(calibrator, method='average', last=None,
                 * 'q(nm-1)': the q-values in inverse nanometers
     """
 
-    def integrate_azimuthally(data, returnq=True):
+    def integrate_azimuthally(data, returnq=True, adu_per_photon=58,
+                              worker_corections=False):
         # Check data type
         if isinstance(data, np.ndarray):
             pass
@@ -68,9 +69,12 @@ def azimuthal_integration(calibrator, method='average', last=None,
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
 
-        if do_asic_commonmode:
-            data = _asic_commonmode_worker(data, mask, adu_per_photon)
-        # do azimuthal integration
+        if bool(worker_corections):
+            if 'asic_commonmode' in worker_corections:
+                data = _asic_commonmode_worker(data, mask, adu_per_photon)
+            if 'dropletize' in worker_corections:
+                data = _dropletize_worker(data, adu_per_photon)
+
         wnan = np.isnan(data)
         q, I = ai.integrate1d(data.reshape(8192,128),
                               500,
@@ -102,7 +106,8 @@ def azimuthal_integration(calibrator, method='average', last=None,
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
     adu_per_photon = calibrator.adu_per_photon
-    do_asic_commonmode = calibrator.worker_corrections['asic_commonmode']
+    worker_corections = list(dict(filter(lambda x: x[1],
+        calibrator.worker_corrections.items())).keys())
 
     print("Start computation", flush=True)
     if method == 'average':
@@ -134,8 +139,9 @@ def azimuthal_integration(calibrator, method='average', last=None,
 
         dim = arr.get_axis_num("pixels")
         q = integrate_azimuthally(arr[0])[0]
-        arr = da.apply_along_axis(integrate_azimuthally, dim, \
-            arr.data, dtype='float32', shape=(500,), returnq=False)
+        arr = da.apply_along_axis(integrate_azimuthally, dim,
+            arr.data, dtype='float32', shape=(500,), returnq=False,
+            adu_per_photon=adu_per_photon, worker_corections=worker_corections)
 
         arr = arr.persist()
         progress(arr)

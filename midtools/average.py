@@ -56,6 +56,9 @@ def average(calibrator, last_train=None, chunks=None, axis='train_pulse',
             arr = arr.stack(pixels=('module', 'dim_0', 'dim_1'))
             arr = arr.transpose(axis, ..., 'pixels')
 
+    if calibrator.worker_corrections['dropletize']:
+        arr = calibrator._dropletize(arr)
+
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)
 

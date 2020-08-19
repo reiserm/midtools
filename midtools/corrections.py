@@ -11,7 +11,8 @@ class Calibrator:
     """Calibrate AGIPD dataset"""
     adu_per_photon = 66
     mask = np.ones((16, 512, 128), 'bool')
-    worker_corrections = {'asic_commonmode': False}
+    worker_corrections = {'asic_commonmode': False,
+                          'dropletize': False}
 
     def __init__(self, run, last_train=10_000, pulses_per_train=100,
             first_cell=1, train_step=1, pulse_step=1,
@@ -48,9 +49,11 @@ class Calibrator:
                                                   # before any masking
                             'masking': True,
                             'internal_masking': apply_internal_mask,
-                            'dropletize': dropletize,}
+                            # 'dropletize': dropletize,
+                            }
 
         Calibrator.worker_corrections['asic_commonmode'] = asic_commonmode
+        Calibrator.worker_corrections['dropletize'] = dropletize
         self.stripes = stripes
         self.data = None
 
@@ -289,4 +292,9 @@ def _asic_commonmode_worker(frames, mask, adu_per_photon=58):
     frames = asics.reshape(-1, 16, 512, 128)
     return frames
 
+def _dropletize_worker(arr, adu_per_photon=58):
+    """Convert adus to photon counts."""
+    arr = np.floor((arr + .5 * adu_per_photon) / adu_per_photon)
+    arr = np.where(arr >= 0, arr, 0)
+    return arr
 
