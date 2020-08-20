@@ -137,7 +137,7 @@ class Dataset:
         self.mask = setup_pars.pop('mask', None)
 
         #: int: Number of X-ray pulses per train.
-        self.pulse_ids = self._get_pulse_ids()
+        self.pulse_ids = self._get_pulse_ids(pulse_step)
         #: np.ndarray: Array of pulse IDs.
         self.pulses_per_train = min([len(self.pulse_ids), pulses_per_train])
         self.pulse_ids = self.pulse_ids[:self.pulses_per_train]
@@ -425,7 +425,7 @@ class Dataset:
         return good_trains, good_indices
 
 
-    def _get_pulse_ids(self, train_idx=0):
+    def _get_pulse_ids(self, pulse_step=1, train_idx=0):
         source = 'MID_DET_AGIPD1M-1/DET/{}CH0:xtdf'
         i = 0
         while i < 10:
@@ -440,8 +440,8 @@ class Dataset:
                     pass
             i += 1
             train_idx += 1
-        raise ValueError("Unable to determine pulse ids. Probably the data \
-                source was not available.")
+        raise ValueError("Unable to determine pulse ids. Probably the data "
+                         "source was not available.")
 
 
     def _start_slurm_cluster(self):
@@ -516,9 +516,11 @@ class Dataset:
             self._create_output_file()
 
         try:
-            for i, (flag, method) in enumerate(zip(self.analysis, self.METHODS)):
+            for i, (flag, method) in enumerate(
+                    zip(self.analysis, self.METHODS)):
                 if int(flag):
-                    if method not in ['META', 'DIAGNOSTICS'] and not self._cluster_running:
+                    if (method not in ['META', 'DIAGNOSTICS'] and not
+                            self._cluster_running):
                         self._start_slurm_cluster()
                         self._cluster_running = True
                         if self._calibrator.data is None:
@@ -705,10 +707,23 @@ def _get_parser():
     parser.add_argument(
             '-ppt',
             '--pulses_per_train',
-            metavar='npulses',
             type=int,
             help='number of pulses per train',
             default=500,
+            )
+    parser.add_argument(
+            '-ts',
+            '--train_step',
+            type=int,
+            help='spacing of trains',
+            default=1,
+            )
+    parser.add_argument(
+            '-ps',
+            '--pulse_step',
+            type=int,
+            help='spacing of pulses',
+            default=1,
             )
     return parser
 
@@ -727,6 +742,8 @@ def main():
                    run_number=args.run,
                    pulses_per_train=args.pulses_per_train,
                    dark_run_number=args.dark_run,
+                   pulse_step=args.pulse_step,
+                   train_step=args.train_step,
                    )
     print("Development Mode")
     print(f"\n{' Starting Analysis ':-^50}")
