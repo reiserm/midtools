@@ -4,6 +4,7 @@ import dask.array as da
 import xarray as xr
 from dask.distributed import Client, progress
 import warnings
+import h5py as h5
 
 import pdb
 
@@ -11,24 +12,35 @@ class Calibrator:
     """Calibrate AGIPD dataset"""
     adu_per_photon = 66
     mask = np.ones((16, 512, 128), 'bool')
-    worker_corrections = {'asic_commonmode': False,
-                          'dropletize': False}
+
 
     def __init__(self, run, last_train=10_000, pulses_per_train=100,
             first_cell=1, train_step=1, pulse_step=1,
-            dark_run_number=None, mask=None,
+            dark_run_number=None, mask=None, is_dark=False,
             apply_internal_mask=False, dropletize=False, stripes=None,
-            baseline=False, asic_commonmode=False,):
+            baseline=False, asic_commonmode=False):
 
         #: DataCollection: e.g., returned from extra_data.RunDirectory
         self.run = run
+        self.is_dark = is_dark
         self.last_train = last_train
         self.pulses_per_train = pulses_per_train
         self.first_cell = first_cell
         self.train_step = train_step
         self.pulse_step = pulse_step
 
-        Calibrator.mask  = mask
+        # corrections applied on Dask lazy array
+        self.corrections = {'dark_subtraction': False,
+                            'baseline': baseline, # baseline has to be applied
+                                                  # before any masking
+                            'masking': True,
+                            'internal_masking': apply_internal_mask,
+                            # 'dropletize': dropletize,
+                            }
+        # corrections applied on each worker
+        self.worker_corrections = {'asic_commonmode': asic_commonmode,
+                                   'dropletize': dropletize}
+
         self.xmask = xr.DataArray(self.mask,
                 dims=('module', 'dim_0', 'dim_1'),
                 coords={'module': np.arange(16),
@@ -36,51 +48,54 @@ class Calibrator:
                         'dim_1': np.arange(128)})
 
         self.is_proc = None
-        #: (str, None): Directory of dark run. Determined by dark_run_number
-        self.darkdir = None
-        #: (DataCollection, None): DataCollection of HG dark run.
-        self.darkrun = None
         #: (np.ndarray, None): average dark over trains
         self.avr_dark = None
+        self.darkfile = None
         # setting the dark run also sets the other dark attributes
         self.dark_run_number = dark_run_number
 
-        self.corrections = {'baseline': baseline, # baseline has to be applied
-                                                  # before any masking
-                            'masking': True,
-                            'internal_masking': apply_internal_mask,
-                            # 'dropletize': dropletize,
-                            }
-
-        Calibrator.worker_corrections['asic_commonmode'] = asic_commonmode
-        Calibrator.worker_corrections['dropletize'] = dropletize
         self.stripes = stripes
+
+        # Darks will not be calibrated (overwrite configfile)
+        if self.is_dark:
+            for correction in ['corrections', 'worker_corrections']:
+                correction_dict = getattr(self, correction)
+                for key in correction_dict:
+                    correction_dict[key] = False
+
         self.data = None
 
 
     @property
     def dark_run_number(self):
-        """int: Run number of high gain dark."""
-        return self.__dark_number
+        """The run number and the file index to load the average dark"""
+        return self.__dark_run_number
 
 
     @dark_run_number.setter
     def dark_run_number(self, number):
-        if isinstance(number, int):
-            if 'proc' in self.datdir:
-                raise ValueError("Use dark options only with raw data")
-            self.darkdir = re.sub('r\d{4}', f'r{number:04}', self.datdir)
-            self.darkrun = RunDirectory(self.darkdir)
-
-            # process darsk
-            self.avr_dark = average(self.darkrun,
-                                    last=10,
-                                    npulses=self.pulses_per_train,)
-            print(type(self.avr_dark), self.avr_dark.shape)
-        elif number is None:
+        if number is None:
             pass
+        elif len(number) == 2:
+            self.darkfile = f"r{number[0]:04}-dark_{number[1]:03}.h5"
+            with h5.File(self.darkfile, 'r') as f:
+                avr_dark = f['dark/intensity'][:]
+                pulse_ids = f['identifiers/pulse_ids'][:].flatten()
+            xdark = xr.DataArray(avr_dark,
+                    dims=('pulseId', 'module', 'dim_0', 'dim_1'),
+                    coords={'pulseId': pulse_ids,
+                            'module': np.arange(16),
+                            'dim_0': np.arange(512),
+                            'dim_1': np.arange(128)})
+            xdark = xdark.transpose('module', 'dim_0', 'dim_1', 'pulseId')
+            self.avr_dark = xdark
+            self.is_proc = False
+            self.corrections['dark_subtraction'] = True
+            # internal mask available only in processed data
+            self.corrections['internal_masking'] = False
         else:
-            raise TypeError(f'Invalid dark run number type {type(number)}.')
+            raise ValueError("Dark input parameter could not be processed:\n"
+                             f"{number}")
         self.__dark_run_number = number
 
 
@@ -146,13 +161,29 @@ class Calibrator:
         pulse_slice = slice(self.first_cell,
                             self.first_cell + self.pulses_per_train,
                             self.pulse_step)
+        # pdb.set_trace()
         if self.is_proc:
             arr = arr[..., train_slice, pulse_slice]
         else:
             # drop gain map
+            # pdb.set_trace()
             arr = arr[:, 0, ..., train_slice, pulse_slice]
             arr = arr.rename({'dim_1': 'dim_0',
                               'dim_2': 'dim_1'})
+            if self.avr_dark is not None:
+                # first cell has been cut when averaging dark
+                dark_slice = slice(0, self.pulses_per_train, self.pulse_step)
+                self.avr_dark = self.avr_dark[..., dark_slice]
+        return arr
+
+
+    def _dark_subtraction(self, arr):
+        """Subtract average darks from train data."""
+        #pdb.set_trace()
+        arr = arr.unstack()
+        arr = arr - self.avr_dark
+        arr = arr.stack(train_pulse=('trainId', 'pulseId'))
+        arr = arr.transpose('train_pulse', ...)
         return arr
 
 
@@ -183,9 +214,10 @@ class Calibrator:
         """Baseline correction based on Ta stripes"""
         pix = arr.where(self.stripes[None, ...])
         module_median = pix.median(['dim_0', 'dim_1'], skipna=True)
-        if np.sum(np.isfinite(module_median)).compute() == 0:
-            warnings.warn("All module medians are nan. Check masks")
-        module_median = module_median.where(np.isfinite(module_median), 0)
+        # if np.sum(np.isfinite(module_median)).compute() == 0:
+        #     warnings.warn("All module medians are nan. Check masks")
+        module_median = module_median.where((np.isfinite(module_median) &
+                                 (module_median < .5*self.adu_per_photon)), 0)
         arr = arr - module_median
         return arr
 

@@ -45,7 +45,7 @@ class Dataset:
 
     def __init__(self, setupfile, analysis='00', last_train=1e6,
             run_number=None, dark_run_number=None, pulses_per_train=500,
-            train_step=1, pulse_step=1):
+            first_cell=1,train_step=1, pulse_step=1, is_dark=False):
         """Dataset object to analyze MID datasets on Maxwell.
 
         Args:
@@ -116,6 +116,9 @@ class Dataset:
         #: str: Path to the setupfile.
         self.setupfile = setupfile
         setup_pars = self._read_setup(setupfile)
+        #: bool: True if current run is a dark run.
+        self.is_dark = is_dark
+        self.dark_run_number = dark_run_number
 
         options = ['slurm', 'calib']
         options.extend(list(map(str.lower, self.METHODS[2:])))
@@ -128,6 +131,8 @@ class Dataset:
         #: bool: True if the SLURMCluster is running
         self._cluster_running  = False
 
+        # reduce computation to _compute_dark
+        analysis = analysis if not is_dark else '00010'
         #: str: Flags of the analysis methods.
         self.analysis = '11' + analysis
         self.run_number = run_number
@@ -136,17 +141,21 @@ class Dataset:
         self.run = RunDirectory(self.datdir)
         self.mask = setup_pars.pop('mask', None)
 
+        # pdb.set_trace()
         #: int: Number of X-ray pulses per train.
         self.pulse_ids = self._get_pulse_ids(pulse_step)
         #: np.ndarray: Array of pulse IDs.
         self.pulses_per_train = min([len(self.pulse_ids), pulses_per_train])
-        self.pulse_ids = self.pulse_ids[:self.pulses_per_train]
+        pulse_slice = slice(first_cell,
+                            first_cell + self.pulses_per_train * pulse_step,
+                            pulse_step)
+        self.pulse_ids = self.pulse_ids[pulse_slice]
         #: float: Delay time between two successive pulses.
         self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
         #: np.ndarray: All train IDs.
         self.train_ids = np.array(self.run.train_ids)
         #: int: last train index to compute
-        self.last_train_idx = min([last_train,len(self.train_ids)])
+        self.last_train_idx = min([last_train, len(self.train_ids)])
         #: int: Number of complete trains
         self.ntrains = min([len(self.train_ids), self.last_train_idx])
         #: np.ndarray: All train indices.
@@ -187,6 +196,7 @@ class Dataset:
                                       pulse_step=pulse_step,
                                       dark_run_number=dark_run_number,
                                       mask=self.mask.copy(),
+                                      is_dark=is_dark,
                                       **self._calib_opt)
 
         # placeholder attributes
@@ -276,6 +286,9 @@ class Dataset:
         else:
             raise ValueError(f'Invalid data directory: {path}')
 
+        if self.is_dark or self.dark_run_number is not None:
+            path = path.replace('proc', 'raw')
+            print('Switched to raw data format')
         path = os.path.abspath(path)
         if os.path.exists(path):
             self.__datdir = path
@@ -435,7 +448,8 @@ class Dataset:
                     tid, train_data = self.run.select(s,
                             'image.pulseId').train_from_index(train_idx)
                     pulse_ids = np.array(train_data[s]['image.pulseId'])
-                    return pulse_ids
+                    #pdb.set_trace()
+                    return pulse_ids.flatten()
                 except KeyError:
                     pass
             i += 1
@@ -485,13 +499,19 @@ class Dataset:
 
         # check existing files and determine counter
         existing = os.listdir('./')
-        counter = map(re.compile(f"(?<=r{self.run_number:04}-analysis_)"
-                              ".*\d{3,}(?=\.h5)").search, existing)
+        search_str = (f"(?<=r{self.run_number:04}-analysis_)"
+                      ".*\d{3,}(?=\.h5)")
+        if self.is_dark:
+            search_str = search_str.replace('analysis', 'dark')
+
+        counter = map(re.compile(search_str).search, existing)
         counter = filter(lambda x: bool(x), counter)
         counter = list(map(lambda x: int(x[0]), counter))
 
         identifier = max(counter) + 1 if len(counter) else 0
         filename = f"./r{self.run_number:04}-analysis_{identifier:03}.h5"
+        if self.is_dark:
+            filename = filename.replace('analysis', 'dark')
 
         # copy the setupfile
         new_setupfile  = f"./r{self.run_number:04}-setup_{identifier:03}.yml"
@@ -629,7 +649,8 @@ class Dataset:
     def _compute_dark(self):
         """Averaging darks."""
 
-        dark_opt = dict(axis='train')
+        dark_opt = dict(axis='train',
+                        last_train=self.last_train_idx,)
         dark_opt.update(self._dark_opt)
 
         print('Computing darks.')
@@ -693,10 +714,11 @@ def _get_parser():
             )
     parser.add_argument(
             '-dr',
-            '--dark_run',
+            '--dark-run',
             type=int,
             help='Dark run number.',
             default=None,
+            nargs=2,
             )
     parser.add_argument(
             '--last',
@@ -706,24 +728,31 @@ def _get_parser():
             )
     parser.add_argument(
             '-ppt',
-            '--pulses_per_train',
+            '--pulses-per-train',
             type=int,
             help='number of pulses per train',
             default=500,
             )
     parser.add_argument(
             '-ts',
-            '--train_step',
+            '--train-step',
             type=int,
             help='spacing of trains',
             default=1,
             )
     parser.add_argument(
             '-ps',
-            '--pulse_step',
+            '--pulse-step',
             type=int,
             help='spacing of pulses',
             default=1,
+            )
+    parser.add_argument(
+            '--is-dark',
+            help='whether or not the run is a dark run',
+            const=True,
+            default=False,
+            nargs='?',
             )
     return parser
 
@@ -744,6 +773,7 @@ def main():
                    dark_run_number=args.dark_run,
                    pulse_step=args.pulse_step,
                    train_step=args.train_step,
+                   is_dark=args.is_dark,
                    )
     print("Development Mode")
     print(f"\n{' Starting Analysis ':-^50}")
