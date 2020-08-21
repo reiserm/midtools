@@ -40,7 +40,7 @@ def average(calibrator, last_train=None, chunks=None, axis='train_pulse',
     if len(axisl) == 1:
         axis = axisl[0]
         arr = arr.unstack('train_pulse')
-        arr = arr[..., arr.trainId < arr.trainId[last_train], :]
+        arr = arr[..., arr.trainId <= arr.trainId[last_train-1], :]
         arr = arr.transpose(axis, ..., 'pixels')
     if len(axisl) == 2:
         axis = 'train_pulse'
