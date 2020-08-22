@@ -32,7 +32,7 @@ from .azimuthal_integration import azimuthal_integration
 from .correlations import correlate
 from .average import average
 from .statistics import statistics
-from .corrections import Calibrator
+from .corrections import Calibrator, _create_mask_from_dark
 
 from functools import reduce
 
@@ -40,8 +40,8 @@ import pdb
 
 class Dataset:
 
-    METHODS = ['META', 'DIAGNOSTICS', 'SAXS', 'XPCS', 'FRAMES',
-               'DARK', 'STATISTICS']
+    METHODS = ['META', 'DIAGNOSTICS', 'FRAMES', 'SAXS', 'XPCS',
+               'STATISTICS', 'DARK']
 
     def __init__(self, setupfile, analysis='00', last_train=1e6,
             run_number=None, dark_run_number=None, pulses_per_train=500,
@@ -59,15 +59,15 @@ class Dataset:
                 +--------+-----------------------------+
                 | flags   | analysis                   |
                 +=========+============================+
-                |  10000  | SAXS azimuthal integration |
+                |  10000  | average frames             |
                 +---------+----------------------------+
-                |  01000  | XPCS correlation functions |
+                |  01000  | SAXS azimuthal integration |
                 +---------+----------------------------+
-                |  00100  | Average frames             |
+                |  00100  | XPCS correlation functions |
                 +---------+----------------------------+
-                |  00010  | Compute darks              |
+                |  00010  | compute statistics         |
                 +---------+----------------------------+
-                |  00001  | Compute statistics         |
+                |  00001  | compute darks              |
                 +---------+----------------------------+
 
             last_train (int, optional): Index of last train to analyze. If not
@@ -132,7 +132,7 @@ class Dataset:
         self._cluster_running  = False
 
         # reduce computation to _compute_dark
-        analysis = analysis if not is_dark else '00010'
+        analysis = analysis if not is_dark else '00011'
         #: str: Flags of the analysis methods.
         self.analysis = '11' + analysis
         self.run_number = run_number
@@ -240,6 +240,7 @@ class Dataset:
             'DARK': {
                 "/dark/intensity": [None, None],
                 "/dark/variance": [None, None],
+                "/dark/mask": [None, None],
             },
             'STATISTICS': {
                 "/pulse_resolved/statistics/centers": [None, None],
@@ -510,13 +511,9 @@ class Dataset:
 
         identifier = max(counter) + 1 if len(counter) else 0
         filename = f"./r{self.run_number:04}-analysis_{identifier:03}.h5"
+
         if self.is_dark:
             filename = filename.replace('analysis', 'dark')
-
-        # copy the setupfile
-        new_setupfile  = f"./r{self.run_number:04}-setup_{identifier:03}.yml"
-        copyfile(self.setupfile, new_setupfile)
-        self.setupfile = new_setupfile
 
         self.file_name = os.path.abspath(filename)
 
@@ -526,6 +523,26 @@ class Dataset:
                     for path,(shape,dtype) in self.h5_structure[method].items():
                         pass
                         # f.create_dataset(path, shape=shape, dtype=dtype)
+
+        with open(self.setupfile) as file:
+            setup_pars = yaml.load(file, Loader=yaml.FullLoader)
+
+        attrs = ['is_dark',
+                'dark_run_number',
+                'run_number',
+                'pulses_per_train']
+        setup_pars.update({attr: getattr(self, attr) for attr in attrs})
+        setup_pars['analysis'] = [self.METHODS[int(x)]
+                        for x in range(len(self.analysis))
+                            if int(self.analysis[x])]
+
+        # copy the setupfile
+        new_setupfile  = f"./r{self.run_number:04}-setup_{identifier:03}.yml"
+
+        with open(new_setupfile, 'w') as f:
+            yaml.dump(setup_pars, f)
+
+        self.setupfile = new_setupfile
 
 
     def compute(self, create_file=True):
@@ -548,7 +565,7 @@ class Dataset:
                     print(f"\n{method:-^50}")
                     getattr(self,
                             f"_compute_{method.lower()}")()
-                    print(f"{' Done ':-^50}")
+                    # print(f"{' Done ':-^50}")
                     # pdb.set_trace()
                     if self._cluster_running:
                         self._client.restart()
@@ -603,7 +620,7 @@ class Dataset:
                 )
         saxs_opt.update(self._saxs_opt)
 
-        print('\nCompute pulse resolved SAXS')
+        print('Compute pulse resolved SAXS')
         out = azimuthal_integration(self._calibrator, method='single',
                 **saxs_opt)
 
@@ -655,6 +672,7 @@ class Dataset:
 
         print('Computing darks.')
         out = average(self._calibrator, **dark_opt)
+        out['darkmask'] = _create_mask_from_dark(out['average'], out['variance'])
 
         self._write_to_h5(out, 'DARK')
 
@@ -671,7 +689,7 @@ class Dataset:
                 )
         statistics_opt.update(self._statistics_opt)
 
-        print('\nCompute pulse resolved statistics')
+        print('Compute pulse resolved statistics')
         out = statistics(self._calibrator, **statistics_opt)
 
         self._write_to_h5(out, 'STATISTICS')
@@ -781,8 +799,8 @@ def main():
     data.compute()
 
     elapsed_time = time.time() - t_start
-    print(f"Finished: elapsed time: {elapsed_time/60:.2f}min")
-    print(f"Results saved under {data.file_name}")
+    print(f"\nFinished: elapsed time: {elapsed_time/60:.2f}min")
+    print(f"Results saved under {data.file_name}\n")
 
 if __name__ == "__main__":
     main()
