@@ -50,6 +50,7 @@ class Calibrator:
         self.is_proc = None
         #: (np.ndarray, None): average dark over trains
         self.avr_dark = None
+        self.dark_mask = None
         self.darkfile = None
         # setting the dark run also sets the other dark attributes
         self.dark_run_number = dark_run_number
@@ -81,6 +82,7 @@ class Calibrator:
             with h5.File(self.darkfile, 'r') as f:
                 avr_dark = f['dark/intensity'][:]
                 pulse_ids = f['identifiers/pulse_ids'][:].flatten()
+                self.dark_mask = self.xmask.copy(data=f['dark/mask'][:])
             xdark = xr.DataArray(avr_dark,
                     dims=('pulseId', 'module', 'dim_0', 'dim_1'),
                     coords={'pulseId': pulse_ids,
@@ -113,6 +115,9 @@ class Calibrator:
                 raise ValueError("Stripe mask has wrong shape: "
                                  f"shape is {stripe.shape}")
             self.corrections['baseline'] = True
+            if self.dark_mask is not None:
+                print("Combining dark-mask and stripe-mask")
+                stripes &= self.dark_mask.values
         elif stripes is None:
             pass
         else:
@@ -189,7 +194,12 @@ class Calibrator:
 
     def _masking(self, arr):
         """Mask bad pixels with provided use mask."""
-        return arr.where(self.xmask)
+        if self.dark_mask is not None:
+            print('using dark mask')
+            # pdb.set_trace()
+            return arr.where(self.xmask & self.dark_mask)
+        else:
+            return arr.where(self.xmask)
 
 
     def _dropletize(self, arr):
@@ -213,7 +223,7 @@ class Calibrator:
     def _baseline(self, arr):
         """Baseline correction based on Ta stripes"""
         pix = arr.where(self.stripes[None, ...])
-        module_median = pix.median(['dim_0', 'dim_1'], skipna=True)
+        module_median = pix.mean(['dim_0', 'dim_1'], skipna=True)
         # if np.sum(np.isfinite(module_median)).compute() == 0:
         #     warnings.warn("All module medians are nan. Check masks")
         module_median = module_median.where((np.isfinite(module_median) &
@@ -272,7 +282,7 @@ class Calibrator:
         arr = arr.assign_coords(asc=arr.asc_0 * arr.asc_1)
         asics = arr.groupby('asc')
 
-        asic_median = asics.median(skipna=True)
+        asic_median = asics.mean(skipna=True)
         asic_median = asic_median.where(asic_median < self.adu_per_photon/2,
                                         other=0)
         asics -= asic_median
@@ -316,17 +326,58 @@ def _asic_commonmode_worker(frames, mask, adu_per_photon=58):
     frames[:, ~mask] = np.nan
     asics = (_to_asics(frames.reshape(-1, 512, 128))
              .reshape(-1, 64, 64))
-    asic_median = np.nanmedian(asics, axis=(1, 2))
-    indices = asic_median <= adu_per_photon / 2
+    asic_median = np.nanmean(asics, axis=(1, 2))
+    indices = asic_median <= (adu_per_photon / 2)
     asics[indices] -= asic_median[indices, None, None]
     ascis = asics.reshape(-1, 16, 64, 64)
     asics = _to_asics(asics, reverse=True)
     frames = asics.reshape(-1, 16, 512, 128)
     return frames
 
+
 def _dropletize_worker(arr, adu_per_photon=58):
     """Convert adus to photon counts."""
     arr = np.floor((arr + .5 * adu_per_photon) / adu_per_photon)
     arr = np.where(arr >= 0, arr, 0)
     return arr
+
+
+def _create_asic_mask():
+    """Mask asic borders."""
+    asic_mask = np.ones((512, 128))
+    asic_mask[:3, :] = 0
+    asic_mask[-3:, :] = 0
+    asic_mask[:, -3:] = 0
+    asic_mask[:, :3] = 0
+    asic_mask[:, 62:66] = 0
+    for i in range(1,9):
+        c = 64*i
+        asic_mask[c-2:c+2, :] = 0
+    asic_mask = np.rollaxis(np.dstack([asic_mask]*16), axis=-1)
+    return asic_mask.astype('bool')
+
+
+def _create_ta_mask():
+    """Mask Ta stripes."""
+    ta_mask = [np.zeros((512, 128)) for _ in range(4)]
+    ta_mask[0][41:47, :] = 1
+    ta_mask[1][103:109, :] = 1
+    ta_mask[2][41:47, :] = 1
+    ta_mask[3][95:101, :] = 1
+    ta_mask = np.rollaxis(np.repeat(np.dstack(ta_mask), 4, axis=2), axis=-1)
+    return ta_mask.astype('bool')
+
+
+def _create_mask_from_dark(dark_counts, dark_variance, pvals=(.2, .5)):
+    """Use dark statistics to make a mask."""
+    darkmask = _create_asic_mask()
+    ndarks = dark_counts.shape[0]
+    for idark in range(ndarks):
+        for ii, (image, p) in enumerate(
+            zip([dark_counts[idark], dark_variance[idark]/dark_counts[idark]],
+                pvals)):
+            nmean = np.nanmedian(image[darkmask])
+            nstd = np.nanstd(image[darkmask])
+            darkmask[(image<(nmean*(1-p))) | (image>(nmean*(1+p)))] = 0
+    return darkmask.astype('bool')
 
