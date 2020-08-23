@@ -18,16 +18,18 @@ class Calibrator:
             first_cell=1, train_step=1, pulse_step=1,
             dark_run_number=None, mask=None, is_dark=False,
             apply_internal_mask=False, dropletize=False, stripes=None,
-            baseline=False, asic_commonmode=False, subshape=(64, 64):
+            baseline=False, asic_commonmode=False, subshape=(64, 64)):
 
         #: DataCollection: e.g., returned from extra_data.RunDirectory
         self.run = run
+        #: bool: True if data is a dark run
         self.is_dark = is_dark
         self.last_train = last_train
         self.pulses_per_train = pulses_per_train
         self.first_cell = first_cell
         self.train_step = train_step
         self.pulse_step = pulse_step
+        #: tuple: asic (or subasic) shape for asic commonmode. Default (64, 64)
         self.subshape = subshape
 
         # corrections applied on Dask lazy array
@@ -42,6 +44,7 @@ class Calibrator:
         self.worker_corrections = {'asic_commonmode': asic_commonmode,
                                    'dropletize': dropletize}
 
+        #: DataArray: pixel mask as xarray.DataArray
         self.xmask = xr.DataArray(self.mask,
                 dims=('module', 'dim_0', 'dim_1'),
                 coords={'module': np.arange(16),
@@ -49,11 +52,13 @@ class Calibrator:
                         'dim_1': np.arange(128)})
 
         self.is_proc = None
-        #: (np.ndarray, None): average dark over trains
+        #: (np.ndarray): average dark over trains
         self.avr_dark = None
+        #: (np.ndarray): mask calculated from darks
         self.dark_mask = None
+        #: str: file with dark data.
         self.darkfile = None
-        # setting the dark run also sets the other dark attributes
+        # setting the dark run also sets the previous dark attributes
         self.dark_run_number = dark_run_number
 
         self.stripes = stripes
@@ -65,6 +70,7 @@ class Calibrator:
                 for key in correction_dict:
                     correction_dict[key] = False
 
+        #: DataAarray: the run AGIPD data
         self.data = None
 
 
@@ -127,7 +133,17 @@ class Calibrator:
 
 
     def _get_data(self, train_step=None, last_train=None):
-        """Read data and apply corrections"""
+        """Read data and apply corrections
+
+        Args:
+            train_step (int): step between trains for slicing.
+
+            last_train (int): last train index to process.
+
+        Return:
+           DataArray: of the run data.
+
+        """
 
         print("Requesting data...", flush=True)
         self._agp = AGIPD1M(self.run, min_modules=16)

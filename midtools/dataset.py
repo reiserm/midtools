@@ -72,14 +72,22 @@ class Dataset:
 
             last_train (int, optional): Index of last train to analyze. If not
                 provided, all trains are processed.
+
             run_number (int, optional): Specify run number. Defaults to None.
                 If not defined, the datdir in the setupfile has to contain the
                 .h5 files.
+
             dark_run_number (int, optional): Dark run number for calibration.
+
             pulses_per_train (int, optional): Specify the number of pulses per
                 train. If not provided, take all stored memory cells.
+
             train_step (int, optional): Stepsize for slicing the train axis.
+
             pulse_step (int, optional): Stepsize for slicing the pulse axis.
+
+            is_dark (bool, optional): If True switch to dark routines, i.e.,
+                average dark for dark subtraction, calculate mask from darks.
 
         Note:
             A setupfile might look like this::

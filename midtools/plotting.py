@@ -146,6 +146,19 @@ def visit_h5(filename):
 
 
 def get_datasets(directory):
+    """Search a folder for datasets processed by midtools
+
+    Args:
+        directory (str): directory to search.
+
+    Returns:
+        namedtuple: `Datasets` that can be passed to the Dataset class. It
+            contains lists of HDF5-files, run numbers, indices, time-stamps.
+
+    Examples:
+        Use the output like `Dataset(datasets)`.
+
+    """
     Datasets = namedtuple('Datasets', ['file',
                                        'run',
                                        'index',
@@ -240,7 +253,8 @@ def add_colorbar(ax, vec, label=None, cmap='magma', discrete=False,
 class Dataset:
     """Class to explore MID datasets.
     """
-    def __init__(self, datasets, metadata, geom, max_len=100, **kwargs):
+    def __init__(self, datasets, metadata=None, geom=None, max_len=100,
+            **kwargs):
         self.datasets = datasets
         self.metadata = metadata
         self.run = None, 0
@@ -277,14 +291,15 @@ class Dataset:
 
 
     @run.setter
-    def run(self, run):
-        run, index = run
+    def run(self, identifier):
+        run, index = identifier
         self.__run = run
         if isinstance(run, int):
-            meta = self.metadata.loc[self.run]
             self.info =  f"RUN: {self.run}({index})\n"
-            cols = ['sample', 'att (%)']
-            self.info += "\n".join([col + f": {meta[col]}" for col in cols])
+            if self.metadata is not None:
+                meta = self.metadata.loc[self.run]
+                cols = ['sample', 'att (%)']
+                self.info += "\n".join([col + f": {meta[col]}" for col in cols])
 
 
     def _rebin(self, arr, avr=False):
@@ -379,9 +394,15 @@ class Dataset:
         ax_main.set_title('average 200 frames')
 
         for i, (ax, frame) in enumerate(zip(subax, frames)):
-            slc = slice(400,-400)
-            ax.imshow(self.geom.position_modules_fast(frame)[0][slc, slc],
-                      norm=LogNorm(), vmin=vmin, vmax=vmax, cmap='magma')
+            if self.geom is not None:
+                slc = slice(400,-400)
+                frame = self.geom.position_modules_fast(frame)[0][slc, slc]
+            else:
+                frame = frame.reshape(-1, 1024)
+
+            ax.imshow(frame, norm=LogNorm(), vmin=vmin, vmax=vmax,
+                    cmap='magma')
+
             ax.set_title(f"frame {i}")
         plt.colorbar(im, ax=subax[1::2], shrink=.5, label='intensity')
         fig.suptitle(self.info.replace('\n', ', '), fontsize=16)
