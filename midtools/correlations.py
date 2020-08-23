@@ -12,6 +12,8 @@ import copy
 from Xana import Xana
 import Xana.Setup
 from Xana.XpcsAna.pyxpcs3 import pyxpcs
+from Xana.XpcsAna.eventcorrelator3 import eventcorrelator
+from Xana.XpcsAna.xpcsmethods import mat2evt
 
 # reading AGIPD data provided by XFEL
 from extra_data import RunDirectory, stack_detector_data, open_run
@@ -83,8 +85,15 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
         # get only the q-bins in range
         qv = qarr[:len(rois)] + (qarr[1] - qarr[0])/2.
 
-        out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False,
-                **kwargs)
+        # out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False,
+        #         **kwargs)
+        m = [data[:, xpcs_mask].mean(1).astype('int32'), ]
+        for qi in range(len(rois)):
+            ind = (..., *rois[qi])
+            m.append(list(mat2evt(data[ind])))
+
+        out = eventcorrelator(m[1:], rois, qv=qv, dt=kwargs.get('dt', 1.),
+                method='events')
 
         corf = out['corf']
         t = corf[1:,0]
