@@ -40,3 +40,6 @@ midtools/test_dask.py
 silica-20nm/
 silica-50nm/
 vycor/
+midtools/setup_config/agipd_mask_03.npy
+midtools/setup_config/detailed_pixel_mask.npy
+midtools/setup_config/flatfield_mask.npy
