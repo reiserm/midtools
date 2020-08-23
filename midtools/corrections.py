@@ -18,7 +18,7 @@ class Calibrator:
             first_cell=1, train_step=1, pulse_step=1,
             dark_run_number=None, mask=None, is_dark=False,
             apply_internal_mask=False, dropletize=False, stripes=None,
-            baseline=False, asic_commonmode=False):
+            baseline=False, asic_commonmode=False, subshape=(64, 64):
 
         #: DataCollection: e.g., returned from extra_data.RunDirectory
         self.run = run
@@ -28,6 +28,7 @@ class Calibrator:
         self.first_cell = first_cell
         self.train_step = train_step
         self.pulse_step = pulse_step
+        self.subshape = subshape
 
         # corrections applied on Dask lazy array
         self.corrections = {'dark_subtraction': False,
@@ -223,7 +224,7 @@ class Calibrator:
     def _baseline(self, arr):
         """Baseline correction based on Ta stripes"""
         pix = arr.where(self.stripes[None, ...])
-        module_median = pix.mean(['dim_0', 'dim_1'], skipna=True)
+        module_median = pix.median(['dim_0', 'dim_1'], skipna=True)
         # if np.sum(np.isfinite(module_median)).compute() == 0:
         #     warnings.warn("All module medians are nan. Check masks")
         module_median = module_median.where((np.isfinite(module_median) &
@@ -273,16 +274,22 @@ class Calibrator:
 
     def _asic_commonmode_xarray(self, arr):
         """Apply commonmode on asic level using xarray."""
+        nrows, ncols = self.subshape
+        nv = 512 // nrows
+        nh = 128 // ncols // 2
+        nhl = sorted(set([x * y for x in [-1, 1] for y in range(1, 1+nh)]))
+
         arr = arr.unstack()
         arr = arr.stack(train_pulse_module=['trainId', 'pulseId', 'module'])
         arr = arr.chunk({'train_pulse_module': 1024})
 
-        arr = arr.assign_coords(asc_0=('dim_0', np.repeat(np.arange(1,9), 64)),
-                                  asc_1=('dim_1', np.repeat([-1, 1], 64)))
+        arr = arr.assign_coords(asc_0=('dim_0',
+                                       np.repeat(np.arange(1,nv+1), nrows)),
+                                  asc_1=('dim_1', np.repeat(nhl, ncols)))
         arr = arr.assign_coords(asc=arr.asc_0 * arr.asc_1)
         asics = arr.groupby('asc')
 
-        asic_median = asics.mean(skipna=True)
+        asic_median = asics.median(skipna=True)
         asic_median = asic_median.where(asic_median < self.adu_per_photon/2,
                                         other=0)
         asics -= asic_median
@@ -293,44 +300,48 @@ class Calibrator:
         return arr
 
 
-def _to_asics(data, reverse=False):
-    """convert module to asics and vise versa"""
-    nrows = ncols = 64
+def _to_asics(data, reverse=False, subshape=(64, 64)):
+    """convert module to subasics and vise versa"""
+    nrows, ncols = subshape
+    nv = 512 // nrows
+    nh = 128 // ncols
+
     if data.ndim == 3:
         if not reverse:
             return (data
-                    .reshape(-1, 8, nrows, 2, ncols)
+                    .reshape(-1, nv, nrows, nh, ncols)
                     .swapaxes(2, 3)
                     .reshape(-1, 16, nrows, ncols))
         else:
             return (data
-                    .reshape(-1, 8, 2, nrows, ncols)
+                    .reshape(-1, nv, nh, nrows, ncols)
                     .swapaxes(2, 3)
                     .reshape(-1, 512, 128))
     elif data.ndim == 2:
         if not reverse:
             return (data
-                    .reshape(8, nrows, 2, ncols)
+                    .reshape(nv, nrows, nh, ncols)
                     .swapaxes(1, 2)
                     .reshape(16, nrows, ncols))
         else:
             return (data
-                    .reshape(8, 2, nrows, ncols)
+                    .reshape(nv, nh, nrows, ncols)
                     .swapaxes(1, 2)
                     .reshape(512,128))
 
 
-def _asic_commonmode_worker(frames, mask, adu_per_photon=58):
+def _asic_commonmode_worker(frames, mask, adu_per_photon=58,
+        subshape=(64, 64)):
     """Asic commonmode to be used in apply_along_axis"""
     frames = frames.reshape(-1, 16, 512, 128)
     frames[:, ~mask] = np.nan
-    asics = (_to_asics(frames.reshape(-1, 512, 128))
-             .reshape(-1, 64, 64))
-    asic_median = np.nanmean(asics, axis=(1, 2))
+    asics = (_to_asics(frames.reshape(-1, 512, 128), subshape=subshape)
+             .reshape(-1, *subshape))
+    asic_median = np.nanmedian(asics, axis=(1, 2))
     indices = asic_median <= (adu_per_photon / 2)
     asics[indices] -= asic_median[indices, None, None]
-    ascis = asics.reshape(-1, 16, 64, 64)
-    asics = _to_asics(asics, reverse=True)
+    ascis = asics.reshape(-1, 16, *subshape)
+    asics = _to_asics(asics, reverse=True, subshape=subshape)
     frames = asics.reshape(-1, 16, 512, 128)
     return frames
 
@@ -372,6 +383,7 @@ def _create_mask_from_dark(dark_counts, dark_variance, pvals=(.2, .5)):
     """Use dark statistics to make a mask."""
     darkmask = _create_asic_mask()
     ndarks = dark_counts.shape[0]
+    median_list = []
     for idark in range(ndarks):
         for ii, (image, p) in enumerate(
             zip([dark_counts[idark], dark_variance[idark]/dark_counts[idark]],
@@ -379,5 +391,6 @@ def _create_mask_from_dark(dark_counts, dark_variance, pvals=(.2, .5)):
             nmean = np.nanmedian(image[darkmask])
             nstd = np.nanstd(image[darkmask])
             darkmask[(image<(nmean*(1-p))) | (image>(nmean*(1+p)))] = 0
-    return darkmask.astype('bool')
+            median_list.append(nmean)
+    return darkmask.astype('bool'), median_list
 

@@ -67,7 +67,8 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
             raise(ValueError(f"Data type {type(data)} not understood."))
 
         if do_asic_commonmode:
-            data = _asic_commonmode_worker(data, mask, adu_per_photon)
+            data = _asic_commonmode_worker(data, mask, adu_per_photon,
+                    subshape)
 
         ind = np.isfinite(data)
         counts, edges = np.histogram(data[ind], bins=nbins,
@@ -99,6 +100,7 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
     npulses = np.unique(arr.pulseId.values).size
     adu_per_photon = calibrator.adu_per_photon
     do_asic_commonmode = calibrator.worker_corrections['asic_commonmode']
+    subshape = calibrator.subshape
 
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)

@@ -132,7 +132,7 @@ class Dataset:
         self._cluster_running  = False
 
         # reduce computation to _compute_dark
-        analysis = analysis if not is_dark else '00011'
+        analysis = analysis if not is_dark else '10011'
         #: str: Flags of the analysis methods.
         self.analysis = '11' + analysis
         self.run_number = run_number
@@ -141,15 +141,13 @@ class Dataset:
         self.run = RunDirectory(self.datdir)
         self.mask = setup_pars.pop('mask', None)
 
-        # pdb.set_trace()
-        #: int: Number of X-ray pulses per train.
-        self.pulse_ids = self._get_pulse_ids(pulse_step)
-        #: np.ndarray: Array of pulse IDs.
-        self.pulses_per_train = min([len(self.pulse_ids), pulses_per_train])
         pulse_slice = slice(first_cell,
-                            first_cell + self.pulses_per_train * pulse_step,
-                            pulse_step)
-        self.pulse_ids = self.pulse_ids[pulse_slice]
+                first_cell + pulses_per_train,
+                pulse_step)
+        #: np.ndarray: Array of pulse IDs.
+        self.pulse_ids = self._get_pulse_ids()[pulse_slice]
+        #: int: Number of X-ray pulses per train.
+        self.pulses_per_train = min([len(self.pulse_ids), pulses_per_train])
         #: float: Delay time between two successive pulses.
         self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
         #: np.ndarray: All train IDs.
@@ -241,6 +239,7 @@ class Dataset:
                 "/dark/intensity": [None, None],
                 "/dark/variance": [None, None],
                 "/dark/mask": [None, None],
+                "/dark/median": [None, None],
             },
             'STATISTICS': {
                 "/pulse_resolved/statistics/centers": [None, None],
@@ -668,11 +667,17 @@ class Dataset:
 
         dark_opt = dict(axis='train',
                         last_train=self.last_train_idx,)
+        pvals = dark_opt.pop('pvals', (.2, .5))
         dark_opt.update(self._dark_opt)
 
         print('Computing darks.')
         out = average(self._calibrator, **dark_opt)
-        out['darkmask'] = _create_mask_from_dark(out['average'], out['variance'])
+        darkmask, median = _create_mask_from_dark(
+                                out['average'],
+                                out['variance'],
+                                pvals=pvals)
+        out['darkmask'] = darkmask
+        out['median'] = median
 
         self._write_to_h5(out, 'DARK')
 

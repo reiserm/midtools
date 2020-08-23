@@ -71,7 +71,8 @@ def azimuthal_integration(calibrator, method='average', last=None,
 
         if bool(worker_corections):
             if 'asic_commonmode' in worker_corections:
-                data = _asic_commonmode_worker(data, mask, adu_per_photon)
+                data = _asic_commonmode_worker(data, mask, adu_per_photon,
+                        subshape)
             if 'dropletize' in worker_corections:
                 data = _dropletize_worker(data, adu_per_photon)
 
@@ -108,6 +109,7 @@ def azimuthal_integration(calibrator, method='average', last=None,
     adu_per_photon = calibrator.adu_per_photon
     worker_corections = list(dict(filter(lambda x: x[1],
         calibrator.worker_corrections.items())).keys())
+    subshape = calibrator.subshape
 
     print("Start computation", flush=True)
     if method == 'average':
