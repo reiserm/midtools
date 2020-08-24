@@ -27,7 +27,7 @@ from dask.diagnostics import ProgressBar
 from .corrections import _asic_commonmode_worker, _dropletize_worker
 
 
-def correlate(calibrator, method='per_train', last=None, qmap=None,
+def correlate(calibrator, method='inter_train', last=None, qmap=None,
     mask=None, setup=None, q_range=None, save_ttc=False, h5filename=None,
     norm_xgm=False, chunks=None, **kwargs):
     """Calculate XPCS correlation functions of a run using dask.
@@ -35,11 +35,13 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     Args:
         calibrator (Calibrator): the data broker.
 
+        method (str, optional): along which axis to correlate. Default is to
+            calculate the correlation function per train.
+
         last (int, optional): last train index. Defaults None. Set to small
             number for testing.
 
-        mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0. If None,
-            no pixel is masked.
+        mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0.
 
         setup ((Xana.Setup), optional): Xana setupfile. Defaults to None.
             If str, include path in the filename. Otherwise provide Xana Setup
@@ -98,7 +100,7 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
             pass
 
     if chunks is None:
-        chunks = {'per_train': {'trainId': 1, 'train_data': 16*512*128}}
+        chunks = {'inter_train': {'trainId': 1, 'train_data': 16*512*128}}
 
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
@@ -117,7 +119,7 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
 
     arr = arr.unstack()
     arr = arr.stack(train_data=('pulseId', 'module', 'dim_0', 'dim_1'))
-    arr = arr.chunk(chunks['per_train'])
+    arr = arr.chunk(chunks['inter_train'])
     npulses = arr.shape[1] // (16*512*128)
 
     if 'nsteps' in q_range:
@@ -137,7 +139,7 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     mask_2d = mask.reshape(16*512,128)
 
     # do the actual calculation
-    if method == 'per_train':
+    if method == 'inter_train':
         t, corf, qv = calculate_correlation(arr[0], return_='all',
                 **kwargs)
 
@@ -147,8 +149,19 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
             worker_corections=worker_corections, adu_per_photon=adu_per_photon,
             **kwargs)
 
-        out = out.persist()
-        progress(out)
+        dset = xarray.Dataset(
+                {
+                    "g2": (["trainId", "t_cor", "qv"], out),
+                    },
+                coords={
+                    "trainId": arr.trainId,
+                    "t_cor": t,
+                    "qv": qv,
+                    },
+                )
+
+        dset = dset.persist()
+        progress(dset)
 
         savdict = {"q(nm-1)": qv,
                    "t(s)": t,

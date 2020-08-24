@@ -650,7 +650,7 @@ class Dataset:
         xpcs_opt.update(self._xpcs_opt)
 
         print('Compute XPCS correlation funcions.')
-        out = correlate(self._calibrator, method='per_train', **xpcs_opt)
+        out = correlate(self._calibrator, method='inter_train', **xpcs_opt)
         self._write_to_h5(out, 'XPCS')
 
 
