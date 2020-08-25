@@ -237,6 +237,7 @@ class Dataset:
                 "/train_resolved/correlation/q": [None, None],
                 "/train_resolved/correlation/t": [None, None],
                 "/train_resolved/correlation/g2": [None, None],
+                "/train_resolved/correlation/ttc": [None, None],
             },
             'FRAMES': {
                 "/average/intensity": [None, None],
@@ -646,11 +647,12 @@ class Dataset:
                 use_multitau=True,
                 rebin_g2=False,
                 h5filename=self.file_name,
+                method='inter_train',
                 )
         xpcs_opt.update(self._xpcs_opt)
 
         print('Compute XPCS correlation funcions.')
-        out = correlate(self._calibrator, method='inter_train', **xpcs_opt)
+        out = correlate(self._calibrator, **xpcs_opt)
         self._write_to_h5(out, 'XPCS')
 
 

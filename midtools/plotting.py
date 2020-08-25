@@ -391,7 +391,7 @@ class Dataset:
 
         im = ax_main.imshow(self.geom.position_modules_fast(avr)[0], cmap='magma',
                             norm=LogNorm(), vmin=vmin, vmax=vmax)
-        ax_main.set_title('average 200 frames')
+        ax_main.set_title('average trains')
 
         for i, (ax, frame) in enumerate(zip(subax, frames)):
             if self.geom is not None:
@@ -403,7 +403,7 @@ class Dataset:
             ax.imshow(frame, norm=LogNorm(), vmin=vmin, vmax=vmax,
                     cmap='magma')
 
-            ax.set_title(f"frame {i}")
+            ax.set_title(f"train {i}")
         plt.colorbar(im, ax=subax[1::2], shrink=.5, label='intensity')
         fig.suptitle(self.info.replace('\n', ', '), fontsize=16)
 
@@ -521,6 +521,7 @@ class Dataset:
                 add_colorbar(ax, trains, cmap=cmap, shrink=0.6,
                      label=(f'train step {tstep} '
                             f'average: {rebin_kws.get("avr", False)}'))
+                ax.set_ylim(.98, None)
             ax.set_xlabel("t ($\mu s$)")
             ax.minorticks_on()
         fig.suptitle(self.info.replace('\n', ' | '), fontsize=16)
