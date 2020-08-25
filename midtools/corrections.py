@@ -181,7 +181,8 @@ class Calibrator:
 
         train_slice = slice(0, last_train, train_step)
         pulse_slice = slice(self.first_cell,
-                            self.first_cell + self.pulses_per_train,
+                            (self.first_cell +
+                                self.pulses_per_train * self.pulse_step),
                             self.pulse_step)
         # pdb.set_trace()
         if self.is_proc:
@@ -194,14 +195,18 @@ class Calibrator:
                               'dim_2': 'dim_1'})
             if self.avr_dark is not None:
                 # first cell has been cut when averaging dark
-                dark_slice = slice(0, self.pulses_per_train, self.pulse_step)
+                dark_slice = slice(
+                        self.first_cell - 1,
+                        (self.first_cell - 1 +
+                            self.pulses_per_train * self.pulse_step),
+                        self.pulse_step)
                 self.avr_dark = self.avr_dark[..., dark_slice]
         return arr
 
 
     def _dark_subtraction(self, arr):
         """Subtract average darks from train data."""
-        #pdb.set_trace()
+        pdb.set_trace()
         arr = arr.unstack()
         arr = arr - self.avr_dark
         arr = arr.stack(train_pulse=('trainId', 'pulseId'))

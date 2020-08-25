@@ -45,7 +45,7 @@ class Dataset:
 
     def __init__(self, setupfile, analysis='00', last_train=1e6,
             run_number=None, dark_run_number=None, pulses_per_train=500,
-            first_cell=1,train_step=1, pulse_step=1, is_dark=False):
+            first_cell=1, train_step=1, pulse_step=1, is_dark=False):
         """Dataset object to analyze MID datasets on Maxwell.
 
         Args:
@@ -150,7 +150,7 @@ class Dataset:
         self.mask = setup_pars.pop('mask', None)
 
         pulse_slice = slice(first_cell,
-                first_cell + pulses_per_train,
+                first_cell + pulses_per_train * pulse_step,
                 pulse_step)
         #: np.ndarray: Array of pulse IDs.
         self.pulse_ids = self._get_pulse_ids()[pulse_slice]
@@ -203,6 +203,7 @@ class Dataset:
                                       dark_run_number=dark_run_number,
                                       mask=self.mask.copy(),
                                       is_dark=is_dark,
+                                      first_cell=first_cell,
                                       **self._calib_opt)
 
         # placeholder attributes
