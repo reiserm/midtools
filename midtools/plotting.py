@@ -350,7 +350,7 @@ class Dataset:
         axs = np.ravel(axs)
 
         xlabels = ['pulse index', 'train index']
-        colors = sns.color_palette('Blues_d', trains.size, desat=.7)
+        colors = sns.color_palette('Blues_d', trains.size, desat=1)
 
         for i, (ax, xl) in enumerate(zip(axs, xlabels)):
             if i == 0:
@@ -476,7 +476,7 @@ class Dataset:
 
 
     def plot_correlation_functions(self, run, index=0, qval=0.1,
-            ylim=(.98, None),  rebin_kws=None):
+            ylim=(.98, None),  clim=(None, None), rebin_kws=None):
         """Plot correlation functions"""
 
         if rebin_kws is None:
@@ -505,7 +505,7 @@ class Dataset:
         for i, (ax,) in enumerate(zip(axs,)):
             if i == 0:
                 im = ax.pcolor(t, np.arange(g2.shape[0]), g2[...,qind],
-                               cmap='inferno',)
+                               cmap='inferno', vmin=clim[0], vmax=clim[1],)
                 ax.set_xscale('log')
                 ax.set_ylabel(f'train step {tstep} '
                               f'average: {rebin_kws.get("avr", False)}')
@@ -555,6 +555,7 @@ class Dataset:
         counts, pstep = self._rebin(counts, **rebin_kws)
         xgm = self._rebin(xgm, **rebin_kws)[0]
         pulses = np.arange(counts.shape[0]) * pstep
+        print(xgm.shape, counts.shape)
 
         # make the plot
         fig, axs = plt.subplots(1, 2, figsize=(9,4),

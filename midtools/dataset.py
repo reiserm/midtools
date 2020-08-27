@@ -155,7 +155,7 @@ class Dataset:
         #: np.ndarray: Array of pulse IDs.
         self.pulse_ids = self._get_pulse_ids()[pulse_slice]
         #: int: Number of X-ray pulses per train.
-        self.pulses_per_train = min([len(self.pulse_ids), pulses_per_train])
+        self.pulses_per_train = min(len(self.pulse_ids), pulses_per_train)
         #: float: Delay time between two successive pulses.
         self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
         #: np.ndarray: All train IDs.
@@ -196,6 +196,7 @@ class Dataset:
 
         #: Calibrator: Calibrator instance for data pre-processing
         self._calibrator = Calibrator(self.run,
+                                      first_cell=first_cell,
                                       pulses_per_train=self.pulses_per_train,
                                       last_train=self.last_train_idx,
                                       train_step=train_step,
@@ -203,7 +204,6 @@ class Dataset:
                                       dark_run_number=dark_run_number,
                                       mask=self.mask.copy(),
                                       is_dark=is_dark,
-                                      first_cell=first_cell,
                                       **self._calib_opt)
 
         # placeholder attributes
@@ -457,7 +457,6 @@ class Dataset:
                     tid, train_data = self.run.select(s,
                             'image.pulseId').train_from_index(train_idx)
                     pulse_ids = np.array(train_data[s]['image.pulseId'])
-                    #pdb.set_trace()
                     return pulse_ids.flatten()
                 except KeyError:
                     pass
@@ -732,10 +731,11 @@ def _get_parser():
     parser.add_argument(
             'analysis',
             type=str,
-            help='which analysis to perform. List of 0s and 1s:\n \
-                  10 runs SAXS routines,\n \
-                  01 runs XPCS routines,\n \
-                  11 runs both SAXS and XPCS routines.',
+            help='(which analysis to perform. List of 0s and 1s:\n
+                  1000 saves average data along specific axis,\n
+                  0100 SAXS routines,\n
+                  0010 XPCS routines,\n
+                  0001 statistics (histograms pulse resolved).',
             )
     parser.add_argument(
             '-r',

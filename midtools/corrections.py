@@ -184,15 +184,15 @@ class Calibrator:
                             (self.first_cell +
                                 self.pulses_per_train * self.pulse_step),
                             self.pulse_step)
-        # pdb.set_trace()
         if self.is_proc:
             arr = arr[..., train_slice, pulse_slice]
         else:
             # drop gain map
-            # pdb.set_trace()
             arr = arr[:, 0, ..., train_slice, pulse_slice]
             arr = arr.rename({'dim_1': 'dim_0',
                               'dim_2': 'dim_1'})
+            # slicing dark should not be neccessary as xarrays
+            # broadcasting takes coords into account
             if self.avr_dark is not None:
                 # first cell has been cut when averaging dark
                 dark_slice = slice(
@@ -206,7 +206,6 @@ class Calibrator:
 
     def _dark_subtraction(self, arr):
         """Subtract average darks from train data."""
-        pdb.set_trace()
         arr = arr.unstack()
         arr = arr - self.avr_dark
         arr = arr.stack(train_pulse=('trainId', 'pulseId'))
@@ -218,7 +217,6 @@ class Calibrator:
         """Mask bad pixels with provided use mask."""
         if self.dark_mask is not None:
             print('using dark mask')
-            # pdb.set_trace()
             return arr.where(self.xmask & self.dark_mask)
         else:
             return arr.where(self.xmask)
