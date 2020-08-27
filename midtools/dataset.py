@@ -731,11 +731,11 @@ def _get_parser():
     parser.add_argument(
             'analysis',
             type=str,
-            help='(which analysis to perform. List of 0s and 1s:\n
-                  1000 saves average data along specific axis,\n
-                  0100 SAXS routines,\n
-                  0010 XPCS routines,\n
-                  0001 statistics (histograms pulse resolved).',
+            help=('which analysis to perform. List of 0s and 1s:\n'
+                  '1000 saves average data along specific axis,\n'
+                  '0100 SAXS routines,\n'
+                  '0010 XPCS routines,\n'
+                  '0001 statistics (histograms pulse resolved.'),
             )
     parser.add_argument(
             '-r',
