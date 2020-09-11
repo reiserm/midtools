@@ -24,7 +24,7 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
-from .corrections import _asic_commonmode_worker, _dropletize_worker
+from .corrections import _asic_commonmode_worker, _dropletize_worker, _cell_commonmode_worker
 
 
 def correlate(calibrator, method='per_train', last=None, qmap=None,
@@ -57,7 +57,7 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     """
 
     def calculate_correlation(data, return_='all', adu_per_photon=58,
-                              worker_corections=False, **kwargs):
+                              worker_corrections=False, **kwargs):
         # Check data type
         if isinstance(data, np.ndarray):
             pass
@@ -66,11 +66,13 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
 
-        if bool(worker_corections):
-            if 'asic_commonmode' in worker_corections:
+        if bool(worker_corrections):
+            if 'asic_commonmode' in worker_corrections:
                 data = _asic_commonmode_worker(data, mask, adu_per_photon,
                         subshape)
-            if 'dropletize' in worker_corections:
+            if 'cell_commonmode' in worker_corrections:
+                data = _cell_commonmode_worker(data, mask, adu_per_photon)
+            if 'dropletize' in worker_corrections:
                 data = _dropletize_worker(data, adu_per_photon)
 
         data = data.reshape(npulses, 8192, 128)
@@ -103,7 +105,7 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
     adu_per_photon = calibrator.adu_per_photon
-    worker_corections = list(dict(filter(lambda x: x[1],
+    worker_corrections = list(dict(filter(lambda x: x[1],
         calibrator.worker_corrections.items())).keys())
     subshape = calibrator.subshape
 
@@ -139,12 +141,12 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     # do the actual calculation
     if method == 'per_train':
         t, corf, qv = calculate_correlation(arr[0], return_='all',
-                **kwargs)
+                worker_corrections=worker_corrections, **kwargs)
 
         dim = arr.get_axis_num("train_data")
         out = da.apply_along_axis(calculate_correlation, dim, arr.data,
             dtype='float32', shape=corf.shape, return_='corf',
-            worker_corections=worker_corections, adu_per_photon=adu_per_photon,
+            worker_corrections=worker_corrections, adu_per_photon=adu_per_photon,
             **kwargs)
 
         out = out.persist()

@@ -17,7 +17,7 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
-from .corrections import _asic_commonmode_worker, _dropletize_worker
+from .corrections import _asic_commonmode_worker, _dropletize_worker, _cell_commonmode_worker
 
 import pdb
 
@@ -60,7 +60,7 @@ def azimuthal_integration(calibrator, method='average', last=None,
     """
 
     def integrate_azimuthally(data, returnq=True, adu_per_photon=58,
-                              worker_corections=False):
+                              worker_corrections=False):
         # Check data type
         if isinstance(data, np.ndarray):
             pass
@@ -69,11 +69,13 @@ def azimuthal_integration(calibrator, method='average', last=None,
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
 
-        if bool(worker_corections):
-            if 'asic_commonmode' in worker_corections:
+        if bool(worker_corrections):
+            if 'asic_commonmode' in worker_corrections:
                 data = _asic_commonmode_worker(data, mask, adu_per_photon,
-                        subshape)
-            if 'dropletize' in worker_corections:
+                                               subshape)
+            # if 'cell_commonmode' in worker_corrections:
+            #     data = _cell_commonmode_worker(data, mask, adu_per_photon)
+            if 'dropletize' in worker_corrections:
                 data = _dropletize_worker(data, adu_per_photon)
 
         wnan = np.isnan(data)
@@ -107,7 +109,7 @@ def azimuthal_integration(calibrator, method='average', last=None,
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
     adu_per_photon = calibrator.adu_per_photon
-    worker_corections = list(dict(filter(lambda x: x[1],
+    worker_corrections = list(dict(filter(lambda x: x[1],
         calibrator.worker_corrections.items())).keys())
     subshape = calibrator.subshape
 
@@ -143,7 +145,7 @@ def azimuthal_integration(calibrator, method='average', last=None,
         q = integrate_azimuthally(arr[0])[0]
         arr = da.apply_along_axis(integrate_azimuthally, dim,
             arr.data, dtype='float32', shape=(500,), returnq=False,
-            adu_per_photon=adu_per_photon, worker_corections=worker_corections)
+            adu_per_photon=adu_per_photon, worker_corrections=worker_corrections)
 
         arr = arr.persist()
         progress(arr)
