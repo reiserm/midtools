@@ -17,7 +17,7 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
-from .corrections import _asic_commonmode_worker
+from .corrections import _asic_commonmode_worker, _cell_commonmode_worker
 
 import pdb
 
@@ -66,9 +66,12 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
 
-        if do_asic_commonmode:
-            data = _asic_commonmode_worker(data, mask, adu_per_photon,
-                    subshape)
+        if bool(worker_corrections):
+            if 'asic_commonmode' in worker_corrections:
+                data = _asic_commonmode_worker(data, mask, adu_per_photon,
+                        subshape)
+            # if 'cell_commonmode' in worker_corrections:
+            #     data = _cell_commonmode_worker(data, mask, adu_per_photon)
 
         ind = np.isfinite(data)
         counts, edges = np.histogram(data[ind], bins=nbins,
@@ -99,7 +102,8 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
     adu_per_photon = calibrator.adu_per_photon
-    do_asic_commonmode = calibrator.worker_corrections['asic_commonmode']
+    worker_corrections = list(dict(filter(lambda x: x[1],
+        calibrator.worker_corrections.items())).keys())
     subshape = calibrator.subshape
 
     print("Start computation", flush=True)

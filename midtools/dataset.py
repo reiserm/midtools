@@ -32,7 +32,7 @@ from .azimuthal_integration import azimuthal_integration
 from .correlations import correlate
 from .average import average
 from .statistics import statistics
-from .corrections import Calibrator, _create_mask_from_dark
+from .corrections import Calibrator, _create_mask_from_dark, _create_mask_from_flatfield
 
 from functools import reduce
 
@@ -41,11 +41,12 @@ import pdb
 class Dataset:
 
     METHODS = ['META', 'DIAGNOSTICS', 'FRAMES', 'SAXS', 'XPCS',
-               'STATISTICS', 'DARK']
+               'STATISTICS', 'DARK', 'FLATFIELD']
 
-    def __init__(self, setupfile, analysis='00', last_train=1e6,
+    def __init__(self, setupfile, analysis=None, last_train=1e6,
             run_number=None, dark_run_number=None, pulses_per_train=500,
-            first_cell=1, train_step=1, pulse_step=1, is_dark=False):
+            first_cell=1, train_step=1, pulse_step=1, is_dark=False,
+            is_flatfield=False, flatfield_run_number=None):
         """Dataset object to analyze MID datasets on Maxwell.
 
         Args:
@@ -67,8 +68,6 @@ class Dataset:
                 +---------+----------------------------+
                 |  00010  | compute statistics         |
                 +---------+----------------------------+
-                |  00001  | compute darks              |
-                +---------+----------------------------+
 
             last_train (int, optional): Index of last train to analyze. If not
                 provided, all trains are processed.
@@ -88,6 +87,11 @@ class Dataset:
 
             is_dark (bool, optional): If True switch to dark routines, i.e.,
                 average dark for dark subtraction, calculate mask from darks.
+
+            is_flatfield (bool, optional): If True use flatfield algorithms.
+
+            flatfield_run_number (int, optional): Run number of the processed
+                flatfield for calibration.
 
         Note:
             A setupfile might look like this::
@@ -126,7 +130,10 @@ class Dataset:
         setup_pars = self._read_setup(setupfile)
         #: bool: True if current run is a dark run.
         self.is_dark = is_dark
+        #: bool: True if current run is a flatfield run.
+        self.is_flatfield = is_flatfield
         self.dark_run_number = dark_run_number
+        self.flatfield_run_number = flatfield_run_number
 
         options = ['slurm', 'calib']
         options.extend(list(map(str.lower, self.METHODS[2:])))
@@ -139,10 +146,18 @@ class Dataset:
         #: bool: True if the SLURMCluster is running
         self._cluster_running  = False
 
-        # reduce computation to _compute_dark
-        analysis = analysis if not is_dark else '10011'
-        #: str: Flags of the analysis methods.
-        self.analysis = '11' + analysis
+        self.analysis = ['meta', 'diagnostics']
+        # reduce computation to _compute_dark or _compute_flatfield
+        if is_dark:
+            self.analysis.extend(['statistics', 'dark'])
+        elif is_flatfield:
+            self.analysis.extend(['statistics', 'flatfield'])
+        else:
+            if analysis is not None:
+                for flag, method in zip(analysis, self.METHODS[2:]):
+                    if int(flag):
+                        self.analysis.append(method.lower())
+
         self.run_number = run_number
         self.datdir = setup_pars.pop('datdir', False)
         #: DataCollection: e.g., returned from extra_data.RunDirectory
@@ -204,6 +219,8 @@ class Dataset:
                                       dark_run_number=dark_run_number,
                                       mask=self.mask.copy(),
                                       is_dark=is_dark,
+                                      is_flatfield=is_flatfield,
+                                      flatfield_run_number=flatfield_run_number,
                                       **self._calib_opt)
 
         # placeholder attributes
@@ -244,15 +261,21 @@ class Dataset:
                 "/average/variance": [None, None],
                 "/average/image_2d": [None, 'float32'],
             },
+            'STATISTICS': {
+                "/pulse_resolved/statistics/centers": [None, None],
+                "/pulse_resolved/statistics/counts": [None, None],
+            },
             'DARK': {
                 "/dark/intensity": [None, None],
                 "/dark/variance": [None, None],
                 "/dark/mask": [None, None],
                 "/dark/median": [None, None],
             },
-            'STATISTICS': {
-                "/pulse_resolved/statistics/centers": [None, None],
-                "/pulse_resolved/statistics/counts": [None, None],
+            'FLATFIELD': {
+                "/flatfield/intensity": [None, None],
+                "/flatfield/variance": [None, None],
+                "/flatfield/mask": [None, None],
+                "/flatfield/median": [None, None],
             },
         }
         return h5_structure
@@ -295,7 +318,8 @@ class Dataset:
         else:
             raise ValueError(f'Invalid data directory: {path}')
 
-        if self.is_dark or self.dark_run_number is not None:
+        if (self.is_dark or self.is_flatfield or
+                self.dark_run_number is not None):
             path = path.replace('proc', 'raw')
             print('Switched to raw data format')
         path = os.path.abspath(path)
@@ -486,6 +510,7 @@ class Dataset:
             death_timeout=3600*2,
             walltime="03:00:00",
             interface='ib0',
+            name='MIDtools',
         )
 
         self._cluster.scale(nprocs*njobs)
@@ -511,6 +536,8 @@ class Dataset:
                       ".*\d{3,}(?=\.h5)")
         if self.is_dark:
             search_str = search_str.replace('analysis', 'dark')
+        elif self.is_flatfield:
+            search_str = search_str.replace('analysis', 'flatfield')
 
         counter = map(re.compile(search_str).search, existing)
         counter = filter(lambda x: bool(x), counter)
@@ -521,27 +548,26 @@ class Dataset:
 
         if self.is_dark:
             filename = filename.replace('analysis', 'dark')
+        elif self.is_flatfield:
+            filename = filename.replace('analysis', 'flatfield')
 
         self.file_name = os.path.abspath(filename)
 
+        # this part is just a placeholder and simply creates the HDF5-file
         with h5.File(self.file_name, 'a') as f:
             for flag, method in zip(self.analysis, self.METHODS):
-                if int(flag):
-                    for path,(shape,dtype) in self.h5_structure[method].items():
-                        pass
-                        # f.create_dataset(path, shape=shape, dtype=dtype)
+                for path,(shape,dtype) in self.h5_structure[method].items():
+                    pass
+                    # f.create_dataset(path, shape=shape, dtype=dtype)
 
         with open(self.setupfile) as file:
             setup_pars = yaml.load(file, Loader=yaml.FullLoader)
 
-        attrs = ['is_dark',
-                'dark_run_number',
-                'run_number',
-                'pulses_per_train']
+        # attributes to save in copied setupfile
+        attrs = ['is_dark', 'dark_run_number', 'run_number',
+                 'pulses_per_train', 'is_flatfield', 'flatfield_run_number',]
         setup_pars.update({attr: getattr(self, attr) for attr in attrs})
-        setup_pars['analysis'] = [self.METHODS[int(x)]
-                        for x in range(len(self.analysis))
-                            if int(self.analysis[x])]
+        setup_pars['analysis'] = self.analysis
 
         # copy the setupfile
         new_setupfile  = f"./r{self.run_number:04}-setup_{identifier:03}.yml"
@@ -558,24 +584,20 @@ class Dataset:
 
         if create_file:
             self._create_output_file()
-
         try:
-            for i, (flag, method) in enumerate(
-                    zip(self.analysis, self.METHODS)):
-                if int(flag):
-                    if (method not in ['META', 'DIAGNOSTICS'] and not
-                            self._cluster_running):
-                        self._start_slurm_cluster()
-                        self._cluster_running = True
-                        if self._calibrator.data is None:
-                            self._calibrator._get_data()
-                    print(f"\n{method:-^50}")
-                    getattr(self,
-                            f"_compute_{method.lower()}")()
-                    # print(f"{' Done ':-^50}")
-                    # pdb.set_trace()
-                    if self._cluster_running:
-                        self._client.restart()
+            for method in self.analysis:
+                if (method not in ['meta', 'diagnostics'] and not
+                        self._cluster_running):
+                    self._start_slurm_cluster()
+                    self._cluster_running = True
+                    if self._calibrator.data is None:
+                        self._calibrator._get_data()
+                print(f"\n{method.upper():-^50}")
+                getattr(self,f"_compute_{method.lower()}")()
+                # print(f"{' Done ':-^50}")
+                # pdb.set_trace()
+                if self._cluster_running:
+                    self._client.restart()
         finally:
             if self._client is not None:
                 self._stop_slurm_cluster()
@@ -675,8 +697,10 @@ class Dataset:
 
         dark_opt = dict(axis='train',
                         last_train=self.last_train_idx,)
-        pvals = dark_opt.pop('pvals', (.2, .5))
         dark_opt.update(self._dark_opt)
+        # we need to remove the options for masking before passing the dict
+        # to the average method
+        pvals = dark_opt.pop('pvals', (.2, .5))
 
         print('Computing darks.')
         out = average(self._calibrator, **dark_opt)
@@ -688,6 +712,31 @@ class Dataset:
         out['median'] = median
 
         self._write_to_h5(out, 'DARK')
+
+
+    def _compute_flatfield(self):
+        """Process flatfield."""
+
+        flatfield_opt = dict(axis='train',
+                             last_train=self.last_train_idx,)
+        flatfield_opt.update(self._flatfield_opt)
+
+        # we need to remove the options for masking before passing the dict
+        # to the average method
+        average_limits = flatfield_opt.pop('average_limits', (3500, 6000))
+        variance_limits = flatfield_opt.pop('variance_limits', (200, 1500))
+
+        print('Computing flatfield.')
+        out = average(self._calibrator, **flatfield_opt)
+        ff_mask, median = _create_mask_from_flatfield(
+                                    out['average'],
+                                    out['variance'],
+                                    average_limits=average_limits,
+                                    variance_limits=variance_limits)
+        out['ffmask'] = ff_mask
+        out['median'] = median
+
+        self._write_to_h5(out, 'FLATFIELD')
 
 
     def _compute_statistics(self):
@@ -711,7 +760,7 @@ class Dataset:
     def _write_to_h5(self, output, method):
         """Dump results in HDF5 file."""
         with h5.File(self.file_name, 'r+') as f:
-            keys = list(self.h5_structure[method].keys())
+            keys = list(self.h5_structure[method.upper()].keys())
             for keyh5, item in zip(keys, output.values()):
                 f[keyh5] = item
 
@@ -781,10 +830,25 @@ def _get_parser():
             )
     parser.add_argument(
             '--is-dark',
-            help='whether or not the run is a dark run',
+            help='whether the run is a dark run',
             const=True,
             default=False,
             nargs='?',
+            )
+    parser.add_argument(
+            '--is-flatfield',
+            help='whether the run is a flatfield run',
+            const=True,
+            default=False,
+            nargs='?',
+            )
+    parser.add_argument(
+            '-ffr',
+            '--flatfield-run',
+            type=int,
+            help='Flatfield run number.',
+            default=None,
+            nargs=2,
             )
     return parser
 
@@ -806,6 +870,8 @@ def main():
                    pulse_step=args.pulse_step,
                    train_step=args.train_step,
                    is_dark=args.is_dark,
+                   is_flatfield=args.is_flatfield,
+                   flatfield_run_number=args.flatfield_run,
                    )
     print("Development Mode")
     print(f"\n{' Starting Analysis ':-^50}")

@@ -5,6 +5,7 @@ import xarray as xr
 from dask.distributed import Client, progress
 import warnings
 import h5py as h5
+import bottleneck  as bn
 
 import pdb
 
@@ -15,15 +16,18 @@ class Calibrator:
 
 
     def __init__(self, run, last_train=10_000, pulses_per_train=100,
-            first_cell=1, train_step=1, pulse_step=1,
-            dark_run_number=None, mask=None, is_dark=False,
+            first_cell=1, train_step=1, pulse_step=1, flatfield_run_number=None,
+            dark_run_number=None, mask=None, is_dark=False, is_flatfield=False,
             apply_internal_mask=False, dropletize=False, stripes=None,
-            baseline=False, asic_commonmode=False, subshape=(64, 64)):
+            baseline=False, asic_commonmode=False, subshape=(64, 64),
+            cell_commonmode=False, cellCM_window=2):
 
         #: DataCollection: e.g., returned from extra_data.RunDirectory
         self.run = run
         #: bool: True if data is a dark run
         self.is_dark = is_dark
+        #: bool: True if data is a flatfield run
+        self.is_flatfield = is_flatfield
         self.last_train = last_train
         self.pulses_per_train = pulses_per_train
         self.first_cell = first_cell
@@ -42,6 +46,7 @@ class Calibrator:
                             }
         # corrections applied on each worker
         self.worker_corrections = {'asic_commonmode': asic_commonmode,
+                                   'cell_commonmode': cell_commonmode,
                                    'dropletize': dropletize}
 
         #: DataArray: pixel mask as xarray.DataArray
@@ -61,10 +66,19 @@ class Calibrator:
         # setting the dark run also sets the previous dark attributes
         self.dark_run_number = dark_run_number
 
+        #: (np.ndarray): flatfield data
+        self.flatfield = None
+        #: (np.ndarray): mask calculated from flatfields
+        self.flatfield_mask = None
+        #: str: file with flatfield data.
+        self.flatfieldfile = None
+        # setting the flatfield run also sets the previous attributes
+        self.flatfield_run_number = flatfield_run_number
+
         self.stripes = stripes
 
         # Darks will not be calibrated (overwrite configfile)
-        if self.is_dark:
+        if self.is_dark or self.is_flatfield:
             for correction in ['corrections', 'worker_corrections']:
                 correction_dict = getattr(self, correction)
                 for key in correction_dict:
@@ -106,6 +120,36 @@ class Calibrator:
             raise ValueError("Dark input parameter could not be processed:\n"
                              f"{number}")
         self.__dark_run_number = number
+
+
+    @property
+    def flatfield_run_number(self):
+        """The run number and the file index to load the flatfield"""
+        return self.__flatfield_run_number
+
+
+    @flatfield_run_number.setter
+    def flatfield_run_number(self, number):
+        if number is None:
+            pass
+        elif len(number) == 2:
+            self.flatfieldfile = f"r{number[0]:04}-flatfield_{number[1]:03}.h5"
+            with h5.File(self.flatfieldfile, 'r') as f:
+                flatfield = f['flatfield/intensity'][:]
+                pulse_ids = f['identifiers/pulse_ids'][:].flatten()
+                self.flatfield_mask = self.xmask.copy(data=f['flatfield/mask'][:])
+            xflatfield = xr.DataArray(flatfield,
+                            dims=('pulseId', 'module', 'dim_0', 'dim_1'),
+                            coords={'pulseId': pulse_ids,
+                                    'module': np.arange(16),
+                                    'dim_0': np.arange(512),
+                                    'dim_1': np.arange(128)})
+            xflatfield = xflatfield.transpose('module', 'dim_0', 'dim_1', 'pulseId')
+            self.flatfield = xflatfield
+        else:
+            raise ValueError("Flatfield input parameter could not be processed:\n"
+                             f"{number}")
+        self.__flatfield_run_number = number
 
 
     @property
@@ -217,7 +261,11 @@ class Calibrator:
         """Mask bad pixels with provided use mask."""
         if self.dark_mask is not None:
             print('using dark mask')
-            return arr.where(self.xmask & self.dark_mask)
+            arr =  arr.where(self.xmask & self.dark_mask)
+            if self.flatfield_mask is not None:
+                print('using flatfield mask')
+                arr = arr.where(self.flatfield_mask)
+            return arr
         else:
             return arr.where(self.xmask)
 
@@ -365,6 +413,15 @@ def _asic_commonmode_worker(frames, mask, adu_per_photon=58,
     return frames
 
 
+def _cell_commonmode_worker(frames, mask, adu_per_photon=58, window=16):
+    """Time axis Commonmode to be used in apply_along_axis"""
+    frames[:, ~mask] = np.nan
+    move_mean = bn.move_mean(frames, window, axis=0, min_count=1)
+    frames = np.where(move_mean <= (adu_per_photon / 2), frames - move_mean,
+                frames)
+    return frames
+
+
 def _dropletize_worker(arr, adu_per_photon=58):
     """Convert adus to photon counts."""
     arr = np.floor((arr + .5 * adu_per_photon) / adu_per_photon)
@@ -407,9 +464,25 @@ def _create_mask_from_dark(dark_counts, dark_variance, pvals=(.2, .5)):
         for ii, (image, p) in enumerate(
             zip([dark_counts[idark], dark_variance[idark]/dark_counts[idark]],
                 pvals)):
-            nmean = np.nanmedian(image[darkmask])
+            nmean = np.nanmean(image[darkmask])
             nstd = np.nanstd(image[darkmask])
             darkmask[(image<(nmean*(1-p))) | (image>(nmean*(1+p)))] = 0
             median_list.append(nmean)
+    median_list = np.vstack((median_list[::2], median_list[1::2]))
     return darkmask.astype('bool'), median_list
+
+
+def _create_mask_from_flatfield(counts, variance, average_limits=(4000, 5800),
+        variance_limits=(200, 1500)):
+    """Use flatfield data to make a mask."""
+    ffmask = _create_asic_mask()
+    medians = np.nanmedian(counts[:, ffmask], axis=1)
+    medians_var = np.nanmedian(variance[:, ffmask], axis=1)
+    counts = counts.mean(0)
+    variance = variance.mean(0)
+    ffmask[(counts < average_limits[0]) |
+           (counts > average_limits[1])] = 0
+    ffmask[(variance < variance_limits[0]) |
+           (variance > variance_limits[1])] = 0
+    return ffmask.astype('bool'), np.vstack((medians, medians_var))
 
