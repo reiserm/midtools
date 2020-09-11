@@ -239,12 +239,12 @@ class Dataset:
                 "/identifiers/train_indices": [(self.ntrains,), 'int8'],
             },
             'DIAGNOSTICS': {
-                "/pulse_resolved/xgm/energy": [
-                    (self.ntrains,self.pulses_per_train), 'float32', ],
-                "/pulse_resolved/xgm/pointing_x": [
-                    (self.ntrains,self.pulses_per_train), 'float32', ],
-                "/pulse_resolved/xgm/pointing_y": [
-                    (self.ntrains,self.pulses_per_train), 'float32', ],
+                "/pulse_resolved/xgm/energy": [None],
+                "/pulse_resolved/xgm/pointing_x": [None],
+                "/pulse_resolved/xgm/pointing_y": [None],
+                "/train_resolved/sample_position/y": [None],
+                "/train_resolved/sample_position/z": [None],
+                "/train_resolved/linkam-stage/temperature": [None],
             },
             'SAXS': {
                 "/pulse_resolved/azimuthal_intensity/q": [(500,), 'float32'],
@@ -556,9 +556,10 @@ class Dataset:
         # this part is just a placeholder and simply creates the HDF5-file
         with h5.File(self.file_name, 'a') as f:
             for flag, method in zip(self.analysis, self.METHODS):
-                for path,(shape,dtype) in self.h5_structure[method].items():
-                    pass
-                    # f.create_dataset(path, shape=shape, dtype=dtype)
+                pass
+                # for path,(shape,dtype) in self.h5_structure[method].items():
+                #     pass
+                #     # f.create_dataset(path, shape=shape, dtype=dtype)
 
         with open(self.setupfile) as file:
             setup_pars = yaml.load(file, Loader=yaml.FullLoader)
@@ -625,15 +626,17 @@ class Dataset:
     def _compute_diagnostics(self):
         """Read diagnostic data. """
         print(f"Read XGM data.")
-        intensity = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                       'data.intensityTD')
-        dx = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                'data.xTD')
-        dy = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                'data.yTD')
-        arr = {'data': intensity[self.train_indices,:self.pulses_per_train],
-               'dx': dx[self.train_indices,:self.pulses_per_train],
-               'dy': dy[self.train_indices,:self.pulses_per_train]}
+        source_keys = {
+                'SA2_XTD1_XGM/XGM/DOOCS:output': [
+                        'data.intensityTD', 'data.xTD', 'data.yTD'],
+                **{f'HW_MID_EXP_SAM_MOTOR_SSHEX_{x}': ['actualPosition.value']
+                    for x in 'YZ'},
+                'MID_EXP_UPP/TCTRL/LINKAM': ['temperature.value'],
+                }
+
+        arr = {'/'.join(source, key):
+                run.get_array(source, key)[self.train_indices,:self.pulses_per_train]
+                for source in source_keys for key in source_keys[source]}
         self._write_to_h5(arr, 'DIAGNOSTICS')
 
 
