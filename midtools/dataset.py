@@ -57,17 +57,17 @@ class Dataset:
                 where a one means to perform the analysis and a zero means to
                 omit the analysis. The analysis types are:
 
-                +--------+-----------------------------+
-                | flags   | analysis                   |
-                +=========+============================+
-                |  10000  | average frames             |
-                +---------+----------------------------+
-                |  01000  | SAXS azimuthal integration |
-                +---------+----------------------------+
-                |  00100  | XPCS correlation functions |
-                +---------+----------------------------+
-                |  00010  | compute statistics         |
-                +---------+----------------------------+
+                +-------+-----------------------------+
+                | flags  | analysis                   |
+                +========+============================+
+                |  1000  | average frames             |
+                +--------+----------------------------+
+                |  0100  | SAXS azimuthal integration |
+                +--------+----------------------------+
+                |  0010  | XPCS correlation functions |
+                +--------+----------------------------+
+                |  0001  | compute statistics         |
+                +--------+----------------------------+
 
             last_train (int, optional): Index of last train to analyze. If not
                 provided, all trains are processed.
@@ -164,23 +164,17 @@ class Dataset:
         self.run = RunDirectory(self.datdir)
         self.mask = setup_pars.pop('mask', None)
 
-        pulse_slice = slice(first_cell,
-                first_cell + pulses_per_train * pulse_step,
-                pulse_step)
-        #: np.ndarray: Array of pulse IDs.
-        self.pulse_ids = self._get_pulse_ids()[pulse_slice]
-        #: int: Number of X-ray pulses per train.
-        self.pulses_per_train = min(len(self.pulse_ids), pulses_per_train)
-        #: float: Delay time between two successive pulses.
-        self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
-        #: np.ndarray: All train IDs.
-        self.train_ids = np.array(self.run.train_ids)
-        #: int: last train index to compute
-        self.last_train_idx = min([last_train, len(self.train_ids)])
-        #: int: Number of complete trains
-        self.ntrains = min([len(self.train_ids), self.last_train_idx])
-        #: np.ndarray: All train indices.
-        self.train_indices = np.arange(self.train_ids.size)
+        self.pulses_per_train = pulses_per_train
+        self.pulse_step = pulse_step
+        self.train_step = train_step
+        self.last_train_idx = last_train
+        self.first_cell = first_cell
+
+        # placeholder set when computing META
+        self.pulse_ids = None
+        self.train_ids = None
+        self.ntrains = None
+        self.train_indices = None
 
         # Experimental Setup
         #: tuple: Position of the direct beam in pixels
@@ -191,37 +185,19 @@ class Dataset:
         self.__dict__.update(setup_pars)
         del setup_pars
 
-        self.setup = Setup(detector='agipd1m')
-        self.setup.mask = self.mask.copy()
-        self.setup.make(**dict(center=self.center,
-            wavelength=12.39/self.photon_energy,
-            distance=self.sample_detector,))
-        dist = self.agipd_geom.to_distortion_array()
-        self.setup.detector.IS_CONTIGUOUS = False
-        self.setup.detector.set_pixel_corners(dist)
-        self.setup._update_ai()
-        qmap = self.setup.ai.array_from_unit(unit='q_nm^-1');
-        #: np.ndarray: q-map
-        self.qmap = qmap.reshape(16,512,128);
+        #: Xana setup instance
+        self.setup = None
+        #: np.ndarray: qmap (16, 512, 128)
+        self.qmap = None
+        self._get_setup()
 
         #: dict: Structure of the HDF5 file
         self.h5_structure = self._make_h5structure()
         #: str: HDF5 file name.
         self.file_name = None
 
-        #: Calibrator: Calibrator instance for data pre-processing
-        self._calibrator = Calibrator(self.run,
-                                      first_cell=first_cell,
-                                      pulses_per_train=self.pulses_per_train,
-                                      last_train=self.last_train_idx,
-                                      train_step=train_step,
-                                      pulse_step=pulse_step,
-                                      dark_run_number=dark_run_number,
-                                      mask=self.mask.copy(),
-                                      is_dark=is_dark,
-                                      is_flatfield=is_flatfield,
-                                      flatfield_run_number=flatfield_run_number,
-                                      **self._calib_opt)
+        #: Calibrator: Calibrator instance for data pre-processing set by _compute_meta
+        self._calibrator = None
 
         # placeholder attributes
         self._cluster = None # the slurm cluster
@@ -233,49 +209,48 @@ class Dataset:
         """
         h5_structure = {
            'META': {
-                "/identifiers/pulses_per_train": [(1,), 'int8'],
-                "/identifiers/pulse_ids": [(self.pulses_per_train,), 'int8'],
-                "/identifiers/train_ids": [(self.ntrains,), 'int16'],
-                "/identifiers/train_indices": [(self.ntrains,), 'int8'],
+                "/identifiers/pulses_per_train": [None],
+                "/identifiers/pulse_ids": [None],
+                "/identifiers/train_ids": [None],
+                "/identifiers/train_indices": [None],
             },
             'DIAGNOSTICS': {
-                "/pulse_resolved/xgm/energy": [
-                    (self.ntrains,self.pulses_per_train), 'float32', ],
-                "/pulse_resolved/xgm/pointing_x": [
-                    (self.ntrains,self.pulses_per_train), 'float32', ],
-                "/pulse_resolved/xgm/pointing_y": [
-                    (self.ntrains,self.pulses_per_train), 'float32', ],
+                "/pulse_resolved/xgm/energy": [None],
+                "/pulse_resolved/xgm/pointing_x": [None],
+                "/pulse_resolved/xgm/pointing_y": [None],
+                "/train_resolved/sample_position/y": [None],
+                "/train_resolved/sample_position/z": [None],
+                "/train_resolved/linkam-stage/temperature": [None],
             },
             'SAXS': {
-                "/pulse_resolved/azimuthal_intensity/q": [(500,), 'float32'],
-                "/pulse_resolved/azimuthal_intensity/I": [
-                    (self.ntrains*self.pulses_per_train, 500), 'float32',],
+                "/pulse_resolved/azimuthal_intensity/q": [None],
+                "/pulse_resolved/azimuthal_intensity/I": [None],
             },
             'XPCS': {
-                "/train_resolved/correlation/q": [None, None],
-                "/train_resolved/correlation/t": [None, None],
-                "/train_resolved/correlation/g2": [None, None],
+                "/train_resolved/correlation/q": [None],
+                "/train_resolved/correlation/t": [None],
+                "/train_resolved/correlation/g2": [None],
             },
             'FRAMES': {
-                "/average/intensity": [None, None],
-                "/average/variance": [None, None],
-                "/average/image_2d": [None, 'float32'],
+                "/average/intensity": [None],
+                "/average/variance": [None],
+                "/average/image_2d": [None],
             },
             'STATISTICS': {
-                "/pulse_resolved/statistics/centers": [None, None],
-                "/pulse_resolved/statistics/counts": [None, None],
+                "/pulse_resolved/statistics/centers": [None],
+                "/pulse_resolved/statistics/counts": [None],
             },
             'DARK': {
-                "/dark/intensity": [None, None],
-                "/dark/variance": [None, None],
-                "/dark/mask": [None, None],
-                "/dark/median": [None, None],
+                "/dark/intensity": [None],
+                "/dark/variance": [None],
+                "/dark/mask": [None],
+                "/dark/median": [None],
             },
             'FLATFIELD': {
-                "/flatfield/intensity": [None, None],
-                "/flatfield/variance": [None, None],
-                "/flatfield/mask": [None, None],
-                "/flatfield/median": [None, None],
+                "/flatfield/intensity": [None],
+                "/flatfield/variance": [None],
+                "/flatfield/mask": [None],
+                "/flatfield/median": [None],
             },
         }
         return h5_structure
@@ -471,7 +446,31 @@ class Dataset:
         return good_trains, good_indices
 
 
-    def _get_pulse_ids(self, pulse_step=1, train_idx=0):
+    def _get_pulse_pattern(self, pulses_per_train=500, pulse_step=1):
+        """determine pulses pattern from machine source"""
+        source = 'MID_RR_SYS/MDL/PULSE_PATTERN_DECODER'
+        if source in self.run.all_sources:
+            pulses = self.run.get_array(source, 'sase2.pulseIds.value')
+            pulse_spacing = np.unique(pulses.where(pulses>199).diff('dim_0'))
+            pulse_spacing = pulse_spacing[np.isfinite(pulse_spacing)].astype('int32')
+            npulses = np.unique((pulses // 200).sum('dim_0'))
+            if len(npulses) == 1:
+                npulses = min(npulses[0], pulses_per_train)
+                print(f"Analyzing {npulses} pulses per train.")
+            else:
+                raise ValueError("Varying number of pulses per train is not supported.")
+            if len(pulse_spacing) == 1:
+                pulse_spacing = max(pulse_spacing[0]//2, pulse_step)
+                print(f"Using pulse spacing of {pulse_spacing}.")
+            else:
+                raise ValueError("Varying the pulse spacing is not supported.")
+        else:
+            pulse_spacing = pulse_step
+            npulses = pulses_per_train
+        return npulses, pulse_spacing
+
+
+    def _get_pulse_ids(self, train_idx=0):
         source = 'MID_DET_AGIPD1M-1/DET/{}CH0:xtdf'
         i = 0
         while i < 10:
@@ -486,8 +485,26 @@ class Dataset:
                     pass
             i += 1
             train_idx += 1
+
         raise ValueError("Unable to determine pulse ids. Probably the data "
                          "source was not available.")
+
+
+    def _get_setup(self):
+        """initialize the Xana setup and the azimuthal integrator"""
+        self.setup = Setup(detector='agipd1m')
+        self.setup.mask = self.mask.copy()
+        self.setup.make(**dict(
+            center=self.center,
+            wavelength=12.39/self.photon_energy,
+            distance=self.sample_detector,))
+        dist = self.agipd_geom.to_distortion_array()
+        self.setup.detector.IS_CONTIGUOUS = False
+        self.setup.detector.set_pixel_corners(dist)
+        self.setup._update_ai()
+        qmap = self.setup.ai.array_from_unit(unit='q_nm^-1');
+        #: np.ndarray: q-map
+        self.qmap = qmap.reshape(16,512,128);
 
 
     def _start_slurm_cluster(self):
@@ -556,9 +573,10 @@ class Dataset:
         # this part is just a placeholder and simply creates the HDF5-file
         with h5.File(self.file_name, 'a') as f:
             for flag, method in zip(self.analysis, self.METHODS):
-                for path,(shape,dtype) in self.h5_structure[method].items():
-                    pass
-                    # f.create_dataset(path, shape=shape, dtype=dtype)
+                pass
+                # for path,(shape,dtype) in self.h5_structure[method].items():
+                #     pass
+                #     # f.create_dataset(path, shape=shape, dtype=dtype)
 
         with open(self.setupfile) as file:
             setup_pars = yaml.load(file, Loader=yaml.FullLoader)
@@ -605,9 +623,32 @@ class Dataset:
 
     def _compute_meta(self):
         """Find complete trains."""
+        # determine trainIds and pulseIds and their spacing
+        self.pulses_per_train, self.pulse_step = self._get_pulse_pattern(
+                                        self.pulses_per_train, self.pulse_step)
+
+        pulse_slice = slice(self.first_cell,
+                self.first_cell + self.pulses_per_train * self.pulse_step,
+                self.pulse_step)
+        #: np.ndarray: Array of pulse IDs.
+        self.pulse_ids = self._get_pulse_ids()[pulse_slice]
+        #: int: Number of X-ray pulses per train.
+        self.pulses_per_train = min(len(self.pulse_ids), self.pulses_per_train)
+        #: float: Delay time between two successive pulses.
+        self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
+        #: np.ndarray: All train IDs.
+        self.train_ids = np.array(self.run.train_ids)
+        #: int: last train index to compute
+        self.last_train_idx = min([self.last_train_idx, len(self.train_ids)])
+        #: int: Number of complete trains
+        self.ntrains = min([len(self.train_ids), self.last_train_idx])
+        #: np.ndarray: All train indices.
+        self.train_indices = np.arange(self.train_ids.size)
+
         all_trains = len(self.train_ids)
         self.train_ids, self.train_indices = self._get_good_trains(self.run)
         print(f'{self.train_ids.size} of {all_trains} trains are complete.')
+
         self.last_train_idx = min([self.last_train_idx,self.train_indices.size])
         self.ntrains = min([self.train_ids.size, self.last_train_idx])
         self.train_ids = self.train_ids[:self.ntrains]
@@ -621,19 +662,43 @@ class Dataset:
 
         self._write_to_h5(data, 'META')
 
+        # initialize the calibrator (data broker)
+        self._calibrator = Calibrator(self.run,
+                                      first_cell=self.first_cell,
+                                      pulses_per_train=self.pulses_per_train,
+                                      last_train=self.last_train_idx,
+                                      train_step=self.train_step,
+                                      pulse_step=self.pulse_step,
+                                      dark_run_number=self.dark_run_number,
+                                      mask=self.mask.copy(),
+                                      is_dark=self.is_dark,
+                                      is_flatfield=self.is_flatfield,
+                                      flatfield_run_number=self.flatfield_run_number,
+                                      **self._calib_opt)
+
 
     def _compute_diagnostics(self):
         """Read diagnostic data. """
         print(f"Read XGM data.")
-        intensity = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                       'data.intensityTD')
-        dx = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                'data.xTD')
-        dy = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                'data.yTD')
-        arr = {'data': intensity[self.train_indices,:self.pulses_per_train],
-               'dx': dx[self.train_indices,:self.pulses_per_train],
-               'dy': dy[self.train_indices,:self.pulses_per_train]}
+        sources = {
+                'SA2_XTD1_XGM/XGM/DOOCS:output': [
+                        'data.intensityTD', 'data.xTD', 'data.yTD'],
+                **{f'HW_MID_EXP_SAM_MOTOR_SSHEX_{x}': ['actualPosition.value']
+                    for x in 'YZ'},
+                'MID_EXP_UPP/TCTRL/LINKAM': ['temperature.value'],
+                }
+        sources = dict(filter(lambda x: x[0] in self.run.all_sources, sources.items()))
+
+        arr = {}
+        for source in sources:
+            for key in sources[source]:
+                data = self.run.get_array(source, key)
+                if len(data.dims) == 2:
+                    data = data[self.train_indices,:self.pulses_per_train]
+                elif len(data.dims) == 1:
+                    data = data[self.train_indices]
+                arr['/'.join((source, key))] = data
+
         self._write_to_h5(arr, 'DIAGNOSTICS')
 
 
@@ -875,7 +940,7 @@ def main():
                    )
     print("Development Mode")
     print(f"\n{' Starting Analysis ':-^50}")
-    print(f"Analyzing {data.ntrains} trains of {data.datdir}")
+    print(f"Analyzing {data.datdir}")
     data.compute()
 
     elapsed_time = time.time() - t_start
