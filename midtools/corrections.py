@@ -88,6 +88,15 @@ class Calibrator:
         self.data = None
 
 
+    def __getstate__(self):
+        """needed for apply dask.apply_along_axis
+
+        We return only those attributes needed by the worker functions
+        """
+        attrs = ['adu_per_photon', 'worker_corrections', 'subshape', 'mask']
+        return {attr: getattr(self, attr) for attr in attrs}
+
+
     @property
     def dark_run_number(self):
         """The run number and the file index to load the average dark"""
@@ -367,68 +376,6 @@ class Calibrator:
         return arr
 
 
-def _to_asics(data, reverse=False, subshape=(64, 64)):
-    """convert module to subasics and vise versa"""
-    nrows, ncols = subshape
-    nv = 512 // nrows
-    nh = 128 // ncols
-
-    if data.ndim == 3:
-        if not reverse:
-            return (data
-                    .reshape(-1, nv, nrows, nh, ncols)
-                    .swapaxes(2, 3)
-                    .reshape(-1, 16, nrows, ncols))
-        else:
-            return (data
-                    .reshape(-1, nv, nh, nrows, ncols)
-                    .swapaxes(2, 3)
-                    .reshape(-1, 512, 128))
-    elif data.ndim == 2:
-        if not reverse:
-            return (data
-                    .reshape(nv, nrows, nh, ncols)
-                    .swapaxes(1, 2)
-                    .reshape(16, nrows, ncols))
-        else:
-            return (data
-                    .reshape(nv, nh, nrows, ncols)
-                    .swapaxes(1, 2)
-                    .reshape(512,128))
-
-
-def _asic_commonmode_worker(frames, mask, adu_per_photon=58,
-        subshape=(64, 64)):
-    """Asic commonmode to be used in apply_along_axis"""
-    frames = frames.reshape(-1, 16, 512, 128)
-    frames[:, ~mask] = np.nan
-    asics = (_to_asics(frames.reshape(-1, 512, 128), subshape=subshape)
-             .reshape(-1, *subshape))
-    asic_median = np.nanmedian(asics, axis=(1, 2))
-    indices = asic_median <= (adu_per_photon / 2)
-    asics[indices] -= asic_median[indices, None, None]
-    ascis = asics.reshape(-1, 16, *subshape)
-    asics = _to_asics(asics, reverse=True, subshape=subshape)
-    frames = asics.reshape(-1, 16, 512, 128)
-    return frames
-
-
-def _cell_commonmode_worker(frames, mask, adu_per_photon=58, window=16):
-    """Time axis Commonmode to be used in apply_along_axis"""
-    frames[:, ~mask] = np.nan
-    move_mean = bn.move_mean(frames, window, axis=0, min_count=1)
-    frames = np.where(move_mean <= (adu_per_photon / 2), frames - move_mean,
-                frames)
-    return frames
-
-
-def _dropletize_worker(arr, adu_per_photon=58):
-    """Convert adus to photon counts."""
-    arr = np.floor((arr + .5 * adu_per_photon) / adu_per_photon)
-    arr = np.where(arr >= 0, arr, 0)
-    return arr
-
-
 def _create_asic_mask():
     """Mask asic borders."""
     asic_mask = np.ones((512, 128))
@@ -485,4 +432,3 @@ def _create_mask_from_flatfield(counts, variance, average_limits=(4000, 5800),
     ffmask[(variance < variance_limits[0]) |
            (variance > variance_limits[1])] = 0
     return ffmask.astype('bool'), np.vstack((medians, medians_var))
-
