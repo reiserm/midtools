@@ -32,7 +32,7 @@ from .azimuthal_integration import azimuthal_integration
 from .correlations import correlate
 from .average import average
 from .statistics import statistics
-from .corrections import Calibrator, _create_mask_from_dark
+from .corrections import Calibrator, _create_mask_from_dark, _create_mask_from_flatfield
 
 from functools import reduce
 
@@ -41,11 +41,12 @@ import pdb
 class Dataset:
 
     METHODS = ['META', 'DIAGNOSTICS', 'FRAMES', 'SAXS', 'XPCS',
-               'STATISTICS', 'DARK']
+               'STATISTICS', 'DARK', 'FLATFIELD']
 
-    def __init__(self, setupfile, analysis='00', last_train=1e6,
+    def __init__(self, setupfile, analysis=None, last_train=1e6,
             run_number=None, dark_run_number=None, pulses_per_train=500,
-            first_cell=1,train_step=1, pulse_step=1, is_dark=False):
+            first_cell=1, train_step=1, pulse_step=1, is_dark=False,
+            is_flatfield=False, flatfield_run_number=None):
         """Dataset object to analyze MID datasets on Maxwell.
 
         Args:
@@ -56,19 +57,17 @@ class Dataset:
                 where a one means to perform the analysis and a zero means to
                 omit the analysis. The analysis types are:
 
-                +--------+-----------------------------+
-                | flags   | analysis                   |
-                +=========+============================+
-                |  10000  | average frames             |
-                +---------+----------------------------+
-                |  01000  | SAXS azimuthal integration |
-                +---------+----------------------------+
-                |  00100  | XPCS correlation functions |
-                +---------+----------------------------+
-                |  00010  | compute statistics         |
-                +---------+----------------------------+
-                |  00001  | compute darks              |
-                +---------+----------------------------+
+                +-------+-----------------------------+
+                | flags  | analysis                   |
+                +========+============================+
+                |  1000  | average frames             |
+                +--------+----------------------------+
+                |  0100  | SAXS azimuthal integration |
+                +--------+----------------------------+
+                |  0010  | XPCS correlation functions |
+                +--------+----------------------------+
+                |  0001  | compute statistics         |
+                +--------+----------------------------+
 
             last_train (int, optional): Index of last train to analyze. If not
                 provided, all trains are processed.
@@ -88,6 +87,11 @@ class Dataset:
 
             is_dark (bool, optional): If True switch to dark routines, i.e.,
                 average dark for dark subtraction, calculate mask from darks.
+
+            is_flatfield (bool, optional): If True use flatfield algorithms.
+
+            flatfield_run_number (int, optional): Run number of the processed
+                flatfield for calibration.
 
         Note:
             A setupfile might look like this::
@@ -126,7 +130,10 @@ class Dataset:
         setup_pars = self._read_setup(setupfile)
         #: bool: True if current run is a dark run.
         self.is_dark = is_dark
+        #: bool: True if current run is a flatfield run.
+        self.is_flatfield = is_flatfield
         self.dark_run_number = dark_run_number
+        self.flatfield_run_number = flatfield_run_number
 
         options = ['slurm', 'calib']
         options.extend(list(map(str.lower, self.METHODS[2:])))
@@ -139,33 +146,35 @@ class Dataset:
         #: bool: True if the SLURMCluster is running
         self._cluster_running  = False
 
-        # reduce computation to _compute_dark
-        analysis = analysis if not is_dark else '10011'
-        #: str: Flags of the analysis methods.
-        self.analysis = '11' + analysis
+        self.analysis = ['meta', 'diagnostics']
+        # reduce computation to _compute_dark or _compute_flatfield
+        if is_dark:
+            self.analysis.extend(['statistics', 'dark'])
+        elif is_flatfield:
+            self.analysis.extend(['statistics', 'flatfield'])
+        else:
+            if analysis is not None:
+                for flag, method in zip(analysis, self.METHODS[2:]):
+                    if int(flag):
+                        self.analysis.append(method.lower())
+
         self.run_number = run_number
         self.datdir = setup_pars.pop('datdir', False)
         #: DataCollection: e.g., returned from extra_data.RunDirectory
         self.run = RunDirectory(self.datdir)
         self.mask = setup_pars.pop('mask', None)
 
-        pulse_slice = slice(first_cell,
-                first_cell + pulses_per_train,
-                pulse_step)
-        #: np.ndarray: Array of pulse IDs.
-        self.pulse_ids = self._get_pulse_ids()[pulse_slice]
-        #: int: Number of X-ray pulses per train.
-        self.pulses_per_train = min([len(self.pulse_ids), pulses_per_train])
-        #: float: Delay time between two successive pulses.
-        self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
-        #: np.ndarray: All train IDs.
-        self.train_ids = np.array(self.run.train_ids)
-        #: int: last train index to compute
-        self.last_train_idx = min([last_train, len(self.train_ids)])
-        #: int: Number of complete trains
-        self.ntrains = min([len(self.train_ids), self.last_train_idx])
-        #: np.ndarray: All train indices.
-        self.train_indices = np.arange(self.train_ids.size)
+        self.pulses_per_train = pulses_per_train
+        self.pulse_step = pulse_step
+        self.train_step = train_step
+        self.last_train_idx = last_train
+        self.first_cell = first_cell
+
+        # placeholder set when computing META
+        self.pulse_ids = None
+        self.train_ids = None
+        self.ntrains = None
+        self.train_indices = None
 
         # Experimental Setup
         #: tuple: Position of the direct beam in pixels
@@ -176,34 +185,19 @@ class Dataset:
         self.__dict__.update(setup_pars)
         del setup_pars
 
-        self.setup = Setup(detector='agipd1m')
-        self.setup.mask = self.mask.copy()
-        self.setup.make(**dict(center=self.center,
-            wavelength=12.39/self.photon_energy,
-            distance=self.sample_detector,))
-        dist = self.agipd_geom.to_distortion_array()
-        self.setup.detector.IS_CONTIGUOUS = False
-        self.setup.detector.set_pixel_corners(dist)
-        self.setup._update_ai()
-        qmap = self.setup.ai.array_from_unit(unit='q_nm^-1');
-        #: np.ndarray: q-map
-        self.qmap = qmap.reshape(16,512,128);
+        #: Xana setup instance
+        self.setup = None
+        #: np.ndarray: qmap (16, 512, 128)
+        self.qmap = None
+        self._get_setup()
 
         #: dict: Structure of the HDF5 file
         self.h5_structure = self._make_h5structure()
         #: str: HDF5 file name.
         self.file_name = None
 
-        #: Calibrator: Calibrator instance for data pre-processing
-        self._calibrator = Calibrator(self.run,
-                                      pulses_per_train=self.pulses_per_train,
-                                      last_train=self.last_train_idx,
-                                      train_step=train_step,
-                                      pulse_step=pulse_step,
-                                      dark_run_number=dark_run_number,
-                                      mask=self.mask.copy(),
-                                      is_dark=is_dark,
-                                      **self._calib_opt)
+        #: Calibrator: Calibrator instance for data pre-processing set by _compute_meta
+        self._calibrator = None
 
         # placeholder attributes
         self._cluster = None # the slurm cluster
@@ -215,44 +209,49 @@ class Dataset:
         """
         h5_structure = {
            'META': {
-                "/identifiers/pulses_per_train": [(1,), 'int8'],
-                "/identifiers/pulse_ids": [(self.pulses_per_train,), 'int8'],
-                "/identifiers/train_ids": [(self.ntrains,), 'int16'],
-                "/identifiers/train_indices": [(self.ntrains,), 'int8'],
+                "/identifiers/pulses_per_train": [None],
+                "/identifiers/pulse_ids": [None],
+                "/identifiers/train_ids": [None],
+                "/identifiers/train_indices": [None],
             },
             'DIAGNOSTICS': {
-                "/pulse_resolved/xgm/energy": [
-                    (self.ntrains,self.pulses_per_train), 'float32', ],
-                "/pulse_resolved/xgm/pointing_x": [
-                    (self.ntrains,self.pulses_per_train), 'float32', ],
-                "/pulse_resolved/xgm/pointing_y": [
-                    (self.ntrains,self.pulses_per_train), 'float32', ],
+                "/pulse_resolved/xgm/energy": [None],
+                "/pulse_resolved/xgm/pointing_x": [None],
+                "/pulse_resolved/xgm/pointing_y": [None],
+                "/train_resolved/sample_position/y": [None],
+                "/train_resolved/sample_position/z": [None],
+                "/train_resolved/linkam-stage/temperature": [None],
             },
             'SAXS': {
-                "/pulse_resolved/azimuthal_intensity/q": [(500,), 'float32'],
-                "/pulse_resolved/azimuthal_intensity/I": [
-                    (self.ntrains*self.pulses_per_train, 500), 'float32',],
+                "/pulse_resolved/azimuthal_intensity/q": [None],
+                "/pulse_resolved/azimuthal_intensity/I": [None],
             },
             'XPCS': {
-                "/train_resolved/correlation/q": [None, None],
-                "/train_resolved/correlation/t": [None, None],
-                "/train_resolved/correlation/g2": [None, None],
-                "/train_resolved/correlation/ttc": [None, None],
+                "/train_resolved/correlation/q": [None],
+                "/train_resolved/correlation/t": [None],
+                "/train_resolved/correlation/g2": [None],
+                "/train_resolved/correlation/ttc": [None],
             },
             'FRAMES': {
-                "/average/intensity": [None, None],
-                "/average/variance": [None, None],
-                "/average/image_2d": [None, 'float32'],
-            },
-            'DARK': {
-                "/dark/intensity": [None, None],
-                "/dark/variance": [None, None],
-                "/dark/mask": [None, None],
-                "/dark/median": [None, None],
+                "/average/intensity": [None],
+                "/average/variance": [None],
+                "/average/image_2d": [None],
             },
             'STATISTICS': {
-                "/pulse_resolved/statistics/centers": [None, None],
-                "/pulse_resolved/statistics/counts": [None, None],
+                "/pulse_resolved/statistics/centers": [None],
+                "/pulse_resolved/statistics/counts": [None],
+            },
+            'DARK': {
+                "/dark/intensity": [None],
+                "/dark/variance": [None],
+                "/dark/mask": [None],
+                "/dark/median": [None],
+            },
+            'FLATFIELD': {
+                "/flatfield/intensity": [None],
+                "/flatfield/variance": [None],
+                "/flatfield/mask": [None],
+                "/flatfield/median": [None],
             },
         }
         return h5_structure
@@ -295,7 +294,8 @@ class Dataset:
         else:
             raise ValueError(f'Invalid data directory: {path}')
 
-        if self.is_dark or self.dark_run_number is not None:
+        if (self.is_dark or self.is_flatfield or
+                self.dark_run_number is not None):
             path = path.replace('proc', 'raw')
             print('Switched to raw data format')
         path = os.path.abspath(path)
@@ -447,7 +447,34 @@ class Dataset:
         return good_trains, good_indices
 
 
-    def _get_pulse_ids(self, pulse_step=1, train_idx=0):
+    def _get_pulse_pattern(self, pulses_per_train=500, pulse_step=1):
+        """determine pulses pattern from machine source"""
+        source = 'MID_RR_SYS/MDL/PULSE_PATTERN_DECODER'
+        if source in self.run.all_sources:
+            pulses = self.run.get_array(source, 'sase2.pulseIds.value')
+            pulse_spacing = np.unique(pulses.where(pulses>199).diff('dim_0'))
+            pulse_spacing = pulse_spacing[np.isfinite(pulse_spacing)].astype('int32')
+            npulses = np.unique((pulses // 200).sum('dim_0'))
+            if len(npulses) == 1:
+                npulses = min(npulses[0], pulses_per_train)
+                print(f"Analyzing {npulses} pulses per train.")
+            else:
+                raise ValueError("Varying number of pulses per train is not supported.")
+            if len(pulse_spacing) == 1:
+                pulse_spacing = max(pulse_spacing[0]//2, pulse_step)
+                print(f"Using pulse spacing of {pulse_spacing}.")
+            else:
+                raise ValueError("Varying the pulse spacing is not supported.")
+        else:
+            pulse_spacing = pulse_step
+            npulses = pulses_per_train
+            print("Pulse pattern decoder not found. Using: "
+                    f"pulse spacing {pulse_spacing} and "
+                    f"{npulses} pulses per train")
+        return npulses, pulse_spacing
+
+
+    def _get_pulse_ids(self, train_idx=0):
         source = 'MID_DET_AGIPD1M-1/DET/{}CH0:xtdf'
         i = 0
         while i < 10:
@@ -457,14 +484,31 @@ class Dataset:
                     tid, train_data = self.run.select(s,
                             'image.pulseId').train_from_index(train_idx)
                     pulse_ids = np.array(train_data[s]['image.pulseId'])
-                    #pdb.set_trace()
                     return pulse_ids.flatten()
                 except KeyError:
                     pass
             i += 1
             train_idx += 1
+
         raise ValueError("Unable to determine pulse ids. Probably the data "
                          "source was not available.")
+
+
+    def _get_setup(self):
+        """initialize the Xana setup and the azimuthal integrator"""
+        self.setup = Setup(detector='agipd1m')
+        self.setup.mask = self.mask.copy()
+        self.setup.make(**dict(
+            center=self.center,
+            wavelength=12.39/self.photon_energy,
+            distance=self.sample_detector,))
+        dist = self.agipd_geom.to_distortion_array()
+        self.setup.detector.IS_CONTIGUOUS = False
+        self.setup.detector.set_pixel_corners(dist)
+        self.setup._update_ai()
+        qmap = self.setup.ai.array_from_unit(unit='q_nm^-1');
+        #: np.ndarray: q-map
+        self.qmap = qmap.reshape(16,512,128);
 
 
     def _start_slurm_cluster(self):
@@ -487,6 +531,7 @@ class Dataset:
             death_timeout=3600*2,
             walltime="03:00:00",
             interface='ib0',
+            name='MIDtools',
         )
 
         self._cluster.scale(nprocs*njobs)
@@ -512,6 +557,8 @@ class Dataset:
                       ".*\d{3,}(?=\.h5)")
         if self.is_dark:
             search_str = search_str.replace('analysis', 'dark')
+        elif self.is_flatfield:
+            search_str = search_str.replace('analysis', 'flatfield')
 
         counter = map(re.compile(search_str).search, existing)
         counter = filter(lambda x: bool(x), counter)
@@ -522,27 +569,27 @@ class Dataset:
 
         if self.is_dark:
             filename = filename.replace('analysis', 'dark')
+        elif self.is_flatfield:
+            filename = filename.replace('analysis', 'flatfield')
 
         self.file_name = os.path.abspath(filename)
 
+        # this part is just a placeholder and simply creates the HDF5-file
         with h5.File(self.file_name, 'a') as f:
             for flag, method in zip(self.analysis, self.METHODS):
-                if int(flag):
-                    for path,(shape,dtype) in self.h5_structure[method].items():
-                        pass
-                        # f.create_dataset(path, shape=shape, dtype=dtype)
+                pass
+                # for path,(shape,dtype) in self.h5_structure[method].items():
+                #     pass
+                #     # f.create_dataset(path, shape=shape, dtype=dtype)
 
         with open(self.setupfile) as file:
             setup_pars = yaml.load(file, Loader=yaml.FullLoader)
 
-        attrs = ['is_dark',
-                'dark_run_number',
-                'run_number',
-                'pulses_per_train']
+        # attributes to save in copied setupfile
+        attrs = ['is_dark', 'dark_run_number', 'run_number',
+                 'pulses_per_train', 'is_flatfield', 'flatfield_run_number',]
         setup_pars.update({attr: getattr(self, attr) for attr in attrs})
-        setup_pars['analysis'] = [self.METHODS[int(x)]
-                        for x in range(len(self.analysis))
-                            if int(self.analysis[x])]
+        setup_pars['analysis'] = self.analysis
 
         # copy the setupfile
         new_setupfile  = f"./r{self.run_number:04}-setup_{identifier:03}.yml"
@@ -559,24 +606,20 @@ class Dataset:
 
         if create_file:
             self._create_output_file()
-
         try:
-            for i, (flag, method) in enumerate(
-                    zip(self.analysis, self.METHODS)):
-                if int(flag):
-                    if (method not in ['META', 'DIAGNOSTICS'] and not
-                            self._cluster_running):
-                        self._start_slurm_cluster()
-                        self._cluster_running = True
-                        if self._calibrator.data is None:
-                            self._calibrator._get_data()
-                    print(f"\n{method:-^50}")
-                    getattr(self,
-                            f"_compute_{method.lower()}")()
-                    # print(f"{' Done ':-^50}")
-                    # pdb.set_trace()
-                    if self._cluster_running:
-                        self._client.restart()
+            for method in self.analysis:
+                if (method not in ['meta', 'diagnostics'] and not
+                        self._cluster_running):
+                    self._start_slurm_cluster()
+                    self._cluster_running = True
+                    if self._calibrator.data is None:
+                        self._calibrator._get_data()
+                print(f"\n{method.upper():-^50}")
+                getattr(self,f"_compute_{method.lower()}")()
+                # print(f"{' Done ':-^50}")
+                # pdb.set_trace()
+                if self._cluster_running:
+                    self._client.restart()
         finally:
             if self._client is not None:
                 self._stop_slurm_cluster()
@@ -584,9 +627,32 @@ class Dataset:
 
     def _compute_meta(self):
         """Find complete trains."""
+        # determine trainIds and pulseIds and their spacing
+        self.pulses_per_train, self.pulse_step = self._get_pulse_pattern(
+                                        self.pulses_per_train, self.pulse_step)
+
+        pulse_slice = slice(self.first_cell,
+                self.first_cell + self.pulses_per_train * self.pulse_step,
+                self.pulse_step)
+        #: np.ndarray: Array of pulse IDs.
+        self.pulse_ids = self._get_pulse_ids()[pulse_slice]
+        #: int: Number of X-ray pulses per train.
+        self.pulses_per_train = min(len(self.pulse_ids), self.pulses_per_train)
+        #: float: Delay time between two successive pulses.
+        self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
+        #: np.ndarray: All train IDs.
+        self.train_ids = np.array(self.run.train_ids)
+        #: int: last train index to compute
+        self.last_train_idx = min([self.last_train_idx, len(self.train_ids)])
+        #: int: Number of complete trains
+        self.ntrains = min([len(self.train_ids), self.last_train_idx])
+        #: np.ndarray: All train indices.
+        self.train_indices = np.arange(self.train_ids.size)
+
         all_trains = len(self.train_ids)
         self.train_ids, self.train_indices = self._get_good_trains(self.run)
         print(f'{self.train_ids.size} of {all_trains} trains are complete.')
+
         self.last_train_idx = min([self.last_train_idx,self.train_indices.size])
         self.ntrains = min([self.train_ids.size, self.last_train_idx])
         self.train_ids = self.train_ids[:self.ntrains]
@@ -600,19 +666,43 @@ class Dataset:
 
         self._write_to_h5(data, 'META')
 
+        # initialize the calibrator (data broker)
+        self._calibrator = Calibrator(self.run,
+                                      first_cell=self.first_cell,
+                                      pulses_per_train=self.pulses_per_train,
+                                      last_train=self.last_train_idx,
+                                      train_step=self.train_step,
+                                      pulse_step=self.pulse_step,
+                                      dark_run_number=self.dark_run_number,
+                                      mask=self.mask.copy(),
+                                      is_dark=self.is_dark,
+                                      is_flatfield=self.is_flatfield,
+                                      flatfield_run_number=self.flatfield_run_number,
+                                      **self._calib_opt)
+
 
     def _compute_diagnostics(self):
         """Read diagnostic data. """
         print(f"Read XGM data.")
-        intensity = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                       'data.intensityTD')
-        dx = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                'data.xTD')
-        dy = self.run.get_array('SA2_XTD1_XGM/XGM/DOOCS:output',
-                                'data.yTD')
-        arr = {'data': intensity[self.train_indices,:self.pulses_per_train],
-               'dx': dx[self.train_indices,:self.pulses_per_train],
-               'dy': dy[self.train_indices,:self.pulses_per_train]}
+        sources = {
+                'SA2_XTD1_XGM/XGM/DOOCS:output': [
+                        'data.intensityTD', 'data.xTD', 'data.yTD'],
+                **{f'HW_MID_EXP_SAM_MOTOR_SSHEX_{x}': ['actualPosition.value']
+                    for x in 'YZ'},
+                'MID_EXP_UPP/TCTRL/LINKAM': ['temperature.value'],
+                }
+        sources = dict(filter(lambda x: x[0] in self.run.all_sources, sources.items()))
+
+        arr = {}
+        for source in sources:
+            for key in sources[source]:
+                data = self.run.get_array(source, key)
+                if len(data.dims) == 2:
+                    data = data[self.train_indices,:self.pulses_per_train]
+                elif len(data.dims) == 1:
+                    data = data[self.train_indices]
+                arr['/'.join((source, key))] = data
+
         self._write_to_h5(arr, 'DIAGNOSTICS')
 
 
@@ -647,7 +737,7 @@ class Dataset:
                 use_multitau=True,
                 rebin_g2=False,
                 h5filename=self.file_name,
-                method='inter_train',
+                method='intra_train',
                 )
         xpcs_opt.update(self._xpcs_opt)
 
@@ -677,8 +767,10 @@ class Dataset:
 
         dark_opt = dict(axis='train',
                         last_train=self.last_train_idx,)
-        pvals = dark_opt.pop('pvals', (.2, .5))
         dark_opt.update(self._dark_opt)
+        # we need to remove the options for masking before passing the dict
+        # to the average method
+        pvals = dark_opt.pop('pvals', (.2, .5))
 
         print('Computing darks.')
         out = average(self._calibrator, **dark_opt)
@@ -690,6 +782,31 @@ class Dataset:
         out['median'] = median
 
         self._write_to_h5(out, 'DARK')
+
+
+    def _compute_flatfield(self):
+        """Process flatfield."""
+
+        flatfield_opt = dict(axis='train',
+                             last_train=self.last_train_idx,)
+        flatfield_opt.update(self._flatfield_opt)
+
+        # we need to remove the options for masking before passing the dict
+        # to the average method
+        average_limits = flatfield_opt.pop('average_limits', (3500, 6000))
+        variance_limits = flatfield_opt.pop('variance_limits', (200, 1500))
+
+        print('Computing flatfield.')
+        out = average(self._calibrator, **flatfield_opt)
+        ff_mask, median = _create_mask_from_flatfield(
+                                    out['average'],
+                                    out['variance'],
+                                    average_limits=average_limits,
+                                    variance_limits=variance_limits)
+        out['ffmask'] = ff_mask
+        out['median'] = median
+
+        self._write_to_h5(out, 'FLATFIELD')
 
 
     def _compute_statistics(self):
@@ -713,9 +830,10 @@ class Dataset:
     def _write_to_h5(self, output, method):
         """Dump results in HDF5 file."""
         with h5.File(self.file_name, 'r+') as f:
-            keys = list(self.h5_structure[method].keys())
+            keys = list(self.h5_structure[method.upper()].keys())
             for keyh5, item in zip(keys, output.values()):
-                f[keyh5] = item
+                if item is not None:
+                    f[keyh5] = item
 
 
 def _get_parser():
@@ -733,10 +851,11 @@ def _get_parser():
     parser.add_argument(
             'analysis',
             type=str,
-            help='which analysis to perform. List of 0s and 1s:\n \
-                  10 runs SAXS routines,\n \
-                  01 runs XPCS routines,\n \
-                  11 runs both SAXS and XPCS routines.',
+            help=('which analysis to perform. List of 0s and 1s:\n'
+                  '1000 saves average data along specific axis,\n'
+                  '0100 SAXS routines,\n'
+                  '0010 XPCS routines,\n'
+                  '0001 statistics (histograms pulse resolved.'),
             )
     parser.add_argument(
             '-r',
@@ -782,10 +901,25 @@ def _get_parser():
             )
     parser.add_argument(
             '--is-dark',
-            help='whether or not the run is a dark run',
+            help='whether the run is a dark run',
             const=True,
             default=False,
             nargs='?',
+            )
+    parser.add_argument(
+            '--is-flatfield',
+            help='whether the run is a flatfield run',
+            const=True,
+            default=False,
+            nargs='?',
+            )
+    parser.add_argument(
+            '-ffr',
+            '--flatfield-run',
+            type=int,
+            help='Flatfield run number.',
+            default=None,
+            nargs=2,
             )
     return parser
 
@@ -807,10 +941,12 @@ def main():
                    pulse_step=args.pulse_step,
                    train_step=args.train_step,
                    is_dark=args.is_dark,
+                   is_flatfield=args.is_flatfield,
+                   flatfield_run_number=args.flatfield_run,
                    )
     print("Development Mode")
     print(f"\n{' Starting Analysis ':-^50}")
-    print(f"Analyzing {data.ntrains} trains of {data.datdir}")
+    print(f"Analyzing {data.datdir}")
     data.compute()
 
     elapsed_time = time.time() - t_start

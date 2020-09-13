@@ -63,7 +63,6 @@ def average(calibrator, last_train=None, chunks=None, axis='train_pulse',
     arr = arr.chunk(chunks)
 
     average = arr.mean(axis, skipna=True, keepdims=True).persist()
-    progress(arr)
     average = np.squeeze(average.values.reshape(-1, 16, 512, 128))
 
     variance = arr.var(axis, skipna=True, keepdims=True).persist()

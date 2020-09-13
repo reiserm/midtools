@@ -5,6 +5,7 @@ import xarray as xr
 from dask.distributed import Client, progress
 import warnings
 import h5py as h5
+import bottleneck  as bn
 
 import pdb
 
@@ -15,15 +16,18 @@ class Calibrator:
 
 
     def __init__(self, run, last_train=10_000, pulses_per_train=100,
-            first_cell=1, train_step=1, pulse_step=1,
-            dark_run_number=None, mask=None, is_dark=False,
+            first_cell=1, train_step=1, pulse_step=1, flatfield_run_number=None,
+            dark_run_number=None, mask=None, is_dark=False, is_flatfield=False,
             apply_internal_mask=False, dropletize=False, stripes=None,
-            baseline=False, asic_commonmode=False, subshape=(64, 64)):
+            baseline=False, asic_commonmode=False, subshape=(64, 64),
+            cell_commonmode=False, cellCM_window=2):
 
         #: DataCollection: e.g., returned from extra_data.RunDirectory
         self.run = run
         #: bool: True if data is a dark run
         self.is_dark = is_dark
+        #: bool: True if data is a flatfield run
+        self.is_flatfield = is_flatfield
         self.last_train = last_train
         self.pulses_per_train = pulses_per_train
         self.first_cell = first_cell
@@ -42,6 +46,7 @@ class Calibrator:
                             }
         # corrections applied on each worker
         self.worker_corrections = {'asic_commonmode': asic_commonmode,
+                                   'cell_commonmode': cell_commonmode,
                                    'dropletize': dropletize}
 
         #: DataArray: pixel mask as xarray.DataArray
@@ -61,10 +66,19 @@ class Calibrator:
         # setting the dark run also sets the previous dark attributes
         self.dark_run_number = dark_run_number
 
+        #: (np.ndarray): flatfield data
+        self.flatfield = None
+        #: (np.ndarray): mask calculated from flatfields
+        self.flatfield_mask = None
+        #: str: file with flatfield data.
+        self.flatfieldfile = None
+        # setting the flatfield run also sets the previous attributes
+        self.flatfield_run_number = flatfield_run_number
+
         self.stripes = stripes
 
         # Darks will not be calibrated (overwrite configfile)
-        if self.is_dark:
+        if self.is_dark or self.is_flatfield:
             for correction in ['corrections', 'worker_corrections']:
                 correction_dict = getattr(self, correction)
                 for key in correction_dict:
@@ -72,6 +86,15 @@ class Calibrator:
 
         #: DataAarray: the run AGIPD data
         self.data = None
+
+
+    def __getstate__(self):
+        """needed for apply dask.apply_along_axis
+
+        We return only those attributes needed by the worker functions
+        """
+        attrs = ['adu_per_photon', 'worker_corrections', 'subshape', 'mask']
+        return {attr: getattr(self, attr) for attr in attrs}
 
 
     @property
@@ -106,6 +129,36 @@ class Calibrator:
             raise ValueError("Dark input parameter could not be processed:\n"
                              f"{number}")
         self.__dark_run_number = number
+
+
+    @property
+    def flatfield_run_number(self):
+        """The run number and the file index to load the flatfield"""
+        return self.__flatfield_run_number
+
+
+    @flatfield_run_number.setter
+    def flatfield_run_number(self, number):
+        if number is None:
+            pass
+        elif len(number) == 2:
+            self.flatfieldfile = f"r{number[0]:04}-flatfield_{number[1]:03}.h5"
+            with h5.File(self.flatfieldfile, 'r') as f:
+                flatfield = f['flatfield/intensity'][:]
+                pulse_ids = f['identifiers/pulse_ids'][:].flatten()
+                self.flatfield_mask = self.xmask.copy(data=f['flatfield/mask'][:])
+            xflatfield = xr.DataArray(flatfield,
+                            dims=('pulseId', 'module', 'dim_0', 'dim_1'),
+                            coords={'pulseId': pulse_ids,
+                                    'module': np.arange(16),
+                                    'dim_0': np.arange(512),
+                                    'dim_1': np.arange(128)})
+            xflatfield = xflatfield.transpose('module', 'dim_0', 'dim_1', 'pulseId')
+            self.flatfield = xflatfield
+        else:
+            raise ValueError("Flatfield input parameter could not be processed:\n"
+                             f"{number}")
+        self.__flatfield_run_number = number
 
 
     @property
@@ -181,27 +234,31 @@ class Calibrator:
 
         train_slice = slice(0, last_train, train_step)
         pulse_slice = slice(self.first_cell,
-                            self.first_cell + self.pulses_per_train,
+                            (self.first_cell +
+                                self.pulses_per_train * self.pulse_step),
                             self.pulse_step)
-        # pdb.set_trace()
         if self.is_proc:
             arr = arr[..., train_slice, pulse_slice]
         else:
             # drop gain map
-            # pdb.set_trace()
             arr = arr[:, 0, ..., train_slice, pulse_slice]
             arr = arr.rename({'dim_1': 'dim_0',
                               'dim_2': 'dim_1'})
+            # slicing dark should not be neccessary as xarrays
+            # broadcasting takes coords into account
             if self.avr_dark is not None:
                 # first cell has been cut when averaging dark
-                dark_slice = slice(0, self.pulses_per_train, self.pulse_step)
+                dark_slice = slice(
+                        self.first_cell - 1,
+                        (self.first_cell - 1 +
+                            self.pulses_per_train * self.pulse_step),
+                        self.pulse_step)
                 self.avr_dark = self.avr_dark[..., dark_slice]
         return arr
 
 
     def _dark_subtraction(self, arr):
         """Subtract average darks from train data."""
-        #pdb.set_trace()
         arr = arr.unstack()
         arr = arr - self.avr_dark
         arr = arr.stack(train_pulse=('trainId', 'pulseId'))
@@ -213,8 +270,11 @@ class Calibrator:
         """Mask bad pixels with provided use mask."""
         if self.dark_mask is not None:
             print('using dark mask')
-            # pdb.set_trace()
-            return arr.where(self.xmask & self.dark_mask)
+            arr =  arr.where(self.xmask & self.dark_mask)
+            if self.flatfield_mask is not None:
+                print('using flatfield mask')
+                arr = arr.where(self.flatfield_mask)
+            return arr
         else:
             return arr.where(self.xmask)
 
@@ -316,59 +376,6 @@ class Calibrator:
         return arr
 
 
-def _to_asics(data, reverse=False, subshape=(64, 64)):
-    """convert module to subasics and vise versa"""
-    nrows, ncols = subshape
-    nv = 512 // nrows
-    nh = 128 // ncols
-
-    if data.ndim == 3:
-        if not reverse:
-            return (data
-                    .reshape(-1, nv, nrows, nh, ncols)
-                    .swapaxes(2, 3)
-                    .reshape(-1, 16, nrows, ncols))
-        else:
-            return (data
-                    .reshape(-1, nv, nh, nrows, ncols)
-                    .swapaxes(2, 3)
-                    .reshape(-1, 512, 128))
-    elif data.ndim == 2:
-        if not reverse:
-            return (data
-                    .reshape(nv, nrows, nh, ncols)
-                    .swapaxes(1, 2)
-                    .reshape(16, nrows, ncols))
-        else:
-            return (data
-                    .reshape(nv, nh, nrows, ncols)
-                    .swapaxes(1, 2)
-                    .reshape(512,128))
-
-
-def _asic_commonmode_worker(frames, mask, adu_per_photon=58,
-        subshape=(64, 64)):
-    """Asic commonmode to be used in apply_along_axis"""
-    frames = frames.reshape(-1, 16, 512, 128)
-    frames[:, ~mask] = np.nan
-    asics = (_to_asics(frames.reshape(-1, 512, 128), subshape=subshape)
-             .reshape(-1, *subshape))
-    asic_median = np.nanmedian(asics, axis=(1, 2))
-    indices = asic_median <= (adu_per_photon / 2)
-    asics[indices] -= asic_median[indices, None, None]
-    ascis = asics.reshape(-1, 16, *subshape)
-    asics = _to_asics(asics, reverse=True, subshape=subshape)
-    frames = asics.reshape(-1, 16, 512, 128)
-    return frames
-
-
-def _dropletize_worker(arr, adu_per_photon=58):
-    """Convert adus to photon counts."""
-    arr = np.floor((arr + .5 * adu_per_photon) / adu_per_photon)
-    arr = np.where(arr >= 0, arr, 0)
-    return arr
-
-
 def _create_asic_mask():
     """Mask asic borders."""
     asic_mask = np.ones((512, 128))
@@ -404,9 +411,24 @@ def _create_mask_from_dark(dark_counts, dark_variance, pvals=(.2, .5)):
         for ii, (image, p) in enumerate(
             zip([dark_counts[idark], dark_variance[idark]/dark_counts[idark]],
                 pvals)):
-            nmean = np.nanmedian(image[darkmask])
+            nmean = np.nanmean(image[darkmask])
             nstd = np.nanstd(image[darkmask])
             darkmask[(image<(nmean*(1-p))) | (image>(nmean*(1+p)))] = 0
             median_list.append(nmean)
+    median_list = np.vstack((median_list[::2], median_list[1::2]))
     return darkmask.astype('bool'), median_list
 
+
+def _create_mask_from_flatfield(counts, variance, average_limits=(4000, 5800),
+        variance_limits=(200, 1500)):
+    """Use flatfield data to make a mask."""
+    ffmask = _create_asic_mask()
+    medians = np.nanmedian(counts[:, ffmask], axis=1)
+    medians_var = np.nanmedian(variance[:, ffmask], axis=1)
+    counts = counts.mean(0)
+    variance = variance.mean(0)
+    ffmask[(counts < average_limits[0]) |
+           (counts > average_limits[1])] = 0
+    ffmask[(variance < variance_limits[0]) |
+           (variance > variance_limits[1])] = 0
+    return ffmask.astype('bool'), np.vstack((medians, medians_var))

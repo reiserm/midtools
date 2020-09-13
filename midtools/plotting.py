@@ -15,13 +15,119 @@ from matplotlib.colors import LogNorm
 import h5py as h5
 import seaborn as sns
 
-
 from scipy.stats import sem
 # from midtools import Dataset as MIDData
 from Xana.XpcsAna.pyxpcs3 import pyxpcs
 from midtools import Dataset as midDataset
 from Xana.Xfit.fitg2global import G2
 from Xana.Xfit.fit_basic import fit_basic
+
+
+
+def calc_speckle_contrast(pixel_size, speckle_size):
+    """Calculate the speckle size in micro meters.
+
+    Args:
+        pixel_size (float): pixel size in micro meters.
+        beam_size (float): beam size in micro meters.
+
+    Returns:
+        float: speckle contrast.
+    """
+    return 1 / (1 +  (pixel_size / speckle_size)**2)
+
+
+def calc_speckle_size(beam_size, distance=5, energy=9):
+    """Calculate the speckle size in micro meters.
+
+    Args:
+        beam_size (float): beam size in micro meters.
+        distance (float, optional): sample detector distance in meters.
+        energy (float, optional): photon energy in kilo electronvolt.
+
+    Returns:
+        float: speckle size in micro meters.
+    """
+    return distance * 12.39 / energy * 1e-10 / beam_size * 1e12
+
+
+def calc_snr(contrast, intensity,  pixels=1, patterns=1, repetitions=1):
+    """Calculate the XPCS signal to noise ratio
+
+    Args:
+        contrast (float): Speckle contrast.
+        intensity (float): Average number of photons per pixel.
+        pixels (int, optional): Number of pixels in ROI.
+        patterns (int, optional): Number of images.
+        repetitions (int, optional): Number of repetitions.
+
+    Returns:
+        float: the signal to noise ratio.
+    """
+    return contrast * intensity * np.sqrt(pixels * patterns * repetitions)
+
+
+def calc_flux(energy, attenuation=1., photon_energy=9,
+              T_lenses=0.586, T_apperture=0.75):
+    """"Calculate the photon flux at MID
+
+    Args:
+        energy (float): pulse energy in micro Joule.
+
+        attenuation (float, optional): attenuation factor through absorbers.
+            a values of `1` would correspond to 100\% transmission.
+
+        photon_energy (float, optional): photon energy in keV.
+
+        T_lenses (float, optional): transmission of lenses.
+
+        T_apperture (float, optional): transmission of apperture.
+
+    Returns:
+        Number of photons per pulse.
+
+    """
+    h_planck = 6.626e-34
+    wavelength = 12.39 / photon_energy * 1e-10
+    photon_energy_J = h_planck * 3e8 / wavelength
+    energy_J = energy * 1e-6
+    photons_per_pules = energy_J / photon_energy_J
+    return photons_per_pules  * attenuation * T_lenses * T_apperture
+
+
+def calc_dose(flux, npulses=1, photon_energy=9, absorption=np.exp(-1),
+             volume_fraction=1., beam_size=10, thickness=1.5,
+             density=1.):
+    """"Calculate the photon flux at MID
+
+    Args:
+        flux (float): photon flux per pulse
+
+        npulses (int, optional): number of pulses.
+
+        photon_energy (float, optional): photon energy in keV.
+
+        absorption (float, optional): sample absorption.
+
+        volume_fraction (float, optional): volume fraction.
+
+        beam_size (float, optional): beam_size in micro meters.
+
+        thickness (float, optional): sample thickness in milli meters.
+
+        density (float, optional): sample mass density in gram per cubic
+            centimeter.
+
+    Returns:
+        Absorbed dose in kGy.
+
+    """
+    h_planck = 6.626e-34
+    wavelength = 12.39 / photon_energy * 1e-10
+    photon_energy_J = h_planck * 3e8 / wavelength
+    total_energy_J = photon_energy_J * flux * npulses
+    return (total_energy_J * absorption * volume_fraction /
+            ((beam_size*1e-6)**2 * thickness*1e-3 * density*1e3) / 1000)
 
 
 def find_percent(x):
@@ -297,9 +403,12 @@ class Dataset:
         if isinstance(run, int):
             self.info =  f"RUN: {self.run}({index})\n"
             if self.metadata is not None:
-                meta = self.metadata.loc[self.run]
-                cols = ['sample', 'att (%)']
-                self.info += "\n".join([col + f": {meta[col]}" for col in cols])
+                if self.run in self.metadata.index:
+                    meta = self.metadata.loc[self.run]
+                    cols = ['sample', 'att (%)']
+                    self.info += "\n".join([col + f": {meta[col]}" for col in cols])
+                else:
+                    pass
 
 
     def _rebin(self, arr, avr=False):
@@ -350,7 +459,7 @@ class Dataset:
         axs = np.ravel(axs)
 
         xlabels = ['pulse index', 'train index']
-        colors = sns.color_palette('Blues_d', trains.size, desat=.7)
+        colors = sns.color_palette('Blues_d', trains.size, desat=1)
 
         for i, (ax, xl) in enumerate(zip(axs, xlabels)):
             if i == 0:
@@ -419,7 +528,7 @@ class Dataset:
         return q, I, np.repeat(trains, I.shape[0]/trains.size)
 
 
-    def plot_azimuthal_intensity(self, run, index=0, rebin_kws=None):
+    def plot_azimuthal_intensity(self, run, index=0, rebin_kws=None, vmin=None, vmax=None):
         """Plot the pulse resolved azimuthal intensity"""
 
         if rebin_kws is None:
@@ -444,7 +553,7 @@ class Dataset:
 
         for i, (ax,) in enumerate(zip(axs,)):
             if i == 0:
-                im = ax.pcolor(q, np.arange(I.shape[0]), I, cmap='inferno',)
+                im = ax.pcolor(q, pulses, I, cmap='inferno', vmin=vmin, vmax=vmax)
                 ax.set_ylabel(f'pulse step {pstep} '
                               f'average: {rebin_kws.get("avr", False)}')
                 plt.colorbar(im, ax=ax, shrink=.6)
@@ -475,8 +584,8 @@ class Dataset:
         return t, g2, q, trains
 
 
-    def plot_correlation_functions(self, run, index=0, qval=0.1,
-                                   rebin_kws=None):
+    def plot_correlation_functions(self, run, index=0, qval=0.1, g2_offset=0,
+            ylim=(.98, None),  clim=(None, None), rebin_kws=None):
         """Plot correlation functions"""
 
         if rebin_kws is None:
@@ -488,7 +597,8 @@ class Dataset:
         qval = q[qind]
         t = t*1e6
         g2, tstep = self._rebin(g2, **rebin_kws)
-        trains = trains[::tstep]
+        trains = trains[:g2.shape[0]*tstep:tstep]
+        g2 -= g2_offset
 
         # make the plot
         fig, axs = plt.subplots(1, 2, figsize=(9,4),
@@ -504,8 +614,8 @@ class Dataset:
 
         for i, (ax,) in enumerate(zip(axs,)):
             if i == 0:
-                im = ax.pcolor(t, np.arange(g2.shape[0]), g2[...,qind],
-                               cmap='inferno',)
+                im = ax.pcolor(t, trains, g2[...,qind],
+                               cmap='inferno', vmin=clim[0], vmax=clim[1],)
                 ax.set_xscale('log')
                 ax.set_ylabel(f'train step {tstep} '
                               f'average: {rebin_kws.get("avr", False)}')
@@ -521,7 +631,7 @@ class Dataset:
                 add_colorbar(ax, trains, cmap=cmap, shrink=0.6,
                      label=(f'train step {tstep} '
                             f'average: {rebin_kws.get("avr", False)}'))
-                ax.set_ylim(.98, None)
+                ax.set_ylim(ylim)
             ax.set_xlabel("t ($\mu s$)")
             ax.minorticks_on()
         fig.suptitle(self.info.replace('\n', ' | '), fontsize=16)
@@ -555,6 +665,7 @@ class Dataset:
         counts, pstep = self._rebin(counts, **rebin_kws)
         xgm = self._rebin(xgm, **rebin_kws)[0]
         pulses = np.arange(counts.shape[0]) * pstep
+        print(xgm.shape, counts.shape)
 
         # make the plot
         fig, axs = plt.subplots(1, 2, figsize=(9,4),
@@ -612,12 +723,13 @@ class Dataset:
                     "t_cor": t,
                     "qv": qv,
                     "qI": qI,
+                    "centers": centers,
                     },
                 )
         dset['g2I'] = (dset['azI'][..., np.abs(dset.qI - dset.qv).argmin('qI')]
                        .mean('pulseId'))
         dset['intercept'] = dset['g2'].isel(t_cor=0)
-        dset['baseline'] =dset['g2'].isel(t_cor=slice(-5,None)).mean('t_cor')
+        dset['baseline'] =dset['g2'].isel(t_cor=slice(-20,None)).mean('t_cor')
         return dset
 
 

@@ -13,6 +13,7 @@ testing
 *.lock
 *.pdf
 *.png
+*isolation_forest*
 
 analyze_silica.sh
 dask-log-wo-mp.tar.gz

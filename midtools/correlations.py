@@ -25,7 +25,7 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
-from .corrections import _asic_commonmode_worker, _dropletize_worker
+from . import worker_functions as wf
 
 
 def ttc_to_g2_ufunc(ttc, dims, time=None):
@@ -36,6 +36,11 @@ def ttc_to_g2_ufunc(ttc, dims, time=None):
                     kwargs={'time': time},
                     dask='parallelized',
                     output_dtypes=[float],)
+
+def convert_ttc(ttc):
+    ttc = ttc.reshape(int(np.sqrt(ttc.size)), -1)
+    g2 = ttc_to_g2(ttc)
+    return g2[:,1]
 
 
 def correlate(calibrator, method='intra_train', last=None, qmap=None,
@@ -69,24 +74,13 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
             * 'corf': the xpcs correlation function
     """
 
-    def calculate_correlation(data, return_='all', adu_per_photon=58,
-                              worker_corections=False, **kwargs):
-        # Check data type
-        if isinstance(data, np.ndarray):
-            pass
-        elif isinstance(data, xarray.DataArray):
-            data = np.array(data.data)
-        else:
-            raise(ValueError(f"Data type {type(data)} not understood."))
+    worker_corrections = ('asic_commonmode', 'cell_commonmode', 'dropletize')
 
-        if bool(worker_corections):
-            if 'asic_commonmode' in worker_corections:
-                data = _asic_commonmode_worker(data, mask, adu_per_photon,
-                        subshape)
-            if 'dropletize' in worker_corections:
-                data = _dropletize_worker(data, adu_per_photon)
+    @wf._xarray2numpy
+    @wf._calibrate_worker(calibrator, worker_corrections)
+    def calculate_correlation(data, return_='all', **kwargs):
 
-        data = data.reshape(npulses, 8192, 128)
+        data = data.reshape(-1, 8192, 128)
         wnan = np.isnan(np.sum(data, axis=0))
         xpcs_mask = mask_2d & ~wnan.reshape(8192,128)
 
@@ -115,14 +109,12 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
             pass
 
     if chunks is None:
-        chunks = {'intra_train': {'trainId': 1, 'train_data': 16*512*128}}
+        chunks = {'intra_train': {'trainId': 1, 'train_data': 16*512*128},
+                  'intra_train_ttc': {'trainId': 1, 'train_data': 16*512*128}}
+
 
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
-    adu_per_photon = calibrator.adu_per_photon
-    worker_corections = list(dict(filter(lambda x: x[1],
-        calibrator.worker_corrections.items())).keys())
-    subshape = calibrator.subshape
 
     if norm_xgm:
         with h5py.File(h5filename, 'r') as f:
@@ -135,7 +127,7 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
     arr = arr.unstack()
     trainId = arr.trainId
     arr = arr.stack(train_data=('pulseId', 'module', 'dim_0', 'dim_1'))
-    arr = arr.chunk(chunks['intra_train'])
+    arr = arr.chunk(chunks[method])
     npulses = arr.shape[1] // (16*512*128)
 
     if 'nsteps' in q_range:
@@ -161,9 +153,7 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
 
         dim = arr.get_axis_num("train_data")
         out = da.apply_along_axis(calculate_correlation, dim, arr.data,
-            dtype='float32', shape=corf.shape, return_='corf',
-            worker_corections=worker_corections, adu_per_photon=adu_per_photon,
-            **kwargs)
+            dtype='float32', shape=corf.shape, return_='corf', **kwargs)
 
         if 'ttc' in method:
             dset = xarray.Dataset(
@@ -177,18 +167,30 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
                         "qv": qv,
                         },
                     )
-            g2 = ttc_to_g2_ufunc(dset['ttc'], ['t1'],
-                    time=dset.t1)
-
-            dset = dset.assign(g2=g2)
+            g2 = da.apply_along_axis(convert_ttc, 1,
+                    dset["ttc"].stack(meas=("trainId", "qv"), data=("t1", "t2")),
+                    dtype='float32', shape=(t.size,))
+            g2 = g2.reshape(dset.trainId.size, qv.size, t.size).swapaxes(1, 2)
+            dset = dset.assign_coords(t_cor=t[1:])
+            dset = dset.assign(g2=(("trainId", "t_cor", "qv"), g2[:,1:]))
+        else:
+            dset = xarray.Dataset(
+                    {
+                        "g2": (["trainId", "t_cor", "qv"], out),
+                        },
+                    coords={
+                        "trainId": trainId,
+                        "t_cor": t,
+                        "qv": qv,
+                        },
+                    )
 
         dset = dset.persist()
         progress(dset)
-        pdb.set_trace()
 
         savdict = {"q(nm-1)": dset.qv.values,
-                   "t(s)": dset.t1.values,
-                   "corf": dset['g2'].values,
+                   "t(s)": dset.t_cor.values,
+                   "corf": dset.get('g2', None),
                    "ttc": dset.get('ttc', None)}
         return savdict
     else:

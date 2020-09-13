@@ -17,7 +17,7 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
-from .corrections import _asic_commonmode_worker, _dropletize_worker
+from . import worker_functions as wf
 
 import pdb
 
@@ -59,22 +59,11 @@ def azimuthal_integration(calibrator, method='average', last=None,
                 * 'q(nm-1)': the q-values in inverse nanometers
     """
 
-    def integrate_azimuthally(data, returnq=True, adu_per_photon=58,
-                              worker_corections=False):
-        # Check data type
-        if isinstance(data, np.ndarray):
-            pass
-        elif isinstance(data, xarray.DataArray):
-            data = np.array(data.data)
-        else:
-            raise(ValueError(f"Data type {type(data)} not understood."))
+    worker_corrections = ('asic_commonmode', 'dropletize')
 
-        if bool(worker_corections):
-            if 'asic_commonmode' in worker_corections:
-                data = _asic_commonmode_worker(data, mask, adu_per_photon,
-                        subshape)
-            if 'dropletize' in worker_corections:
-                data = _dropletize_worker(data, adu_per_photon)
+    @wf._xarray2numpy
+    @wf._calibrate_worker(calibrator, worker_corrections)
+    def integrate_azimuthally(data, returnq=True):
 
         wnan = np.isnan(data)
         q, I = ai.integrate1d(data.reshape(8192,128),
@@ -91,7 +80,7 @@ def azimuthal_integration(calibrator, method='average', last=None,
 
     if chunks is None:
         chunks = {'average': {'train_pulse': 8, 'pixels': 16*512*128},
-                  'single': {'train_pulse': 16, 'pixels': 16*128*512}}
+                  'single': {'train_pulse': 128, 'pixels': 128*512}}
 
     # get the azimuthal integrator
     ai = copy.copy(setup.ai)
@@ -106,10 +95,6 @@ def azimuthal_integration(calibrator, method='average', last=None,
 
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
-    adu_per_photon = calibrator.adu_per_photon
-    worker_corections = list(dict(filter(lambda x: x[1],
-        calibrator.worker_corrections.items())).keys())
-    subshape = calibrator.subshape
 
     print("Start computation", flush=True)
     if method == 'average':
@@ -142,8 +127,7 @@ def azimuthal_integration(calibrator, method='average', last=None,
         dim = arr.get_axis_num("pixels")
         q = integrate_azimuthally(arr[0])[0]
         arr = da.apply_along_axis(integrate_azimuthally, dim,
-            arr.data, dtype='float32', shape=(500,), returnq=False,
-            adu_per_photon=adu_per_photon, worker_corections=worker_corections)
+            arr.data, dtype='float32', shape=(500,), returnq=False)
 
         arr = arr.persist()
         progress(arr)

@@ -17,7 +17,7 @@ from dask.distributed import Client, progress
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
-from .corrections import _asic_commonmode_worker
+from . import worker_functions as wf
 
 import pdb
 
@@ -57,18 +57,11 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
               * 'centers': bin centers
     """
 
-    def statistics_worker(data, return_centers=False):
-        # Check data type
-        if isinstance(data, np.ndarray):
-            pass
-        elif isinstance(data, xarray.DataArray):
-            data = np.array(data.data)
-        else:
-            raise(ValueError(f"Data type {type(data)} not understood."))
+    worker_corrections = ('asic_commonmode')
 
-        if do_asic_commonmode:
-            data = _asic_commonmode_worker(data, mask, adu_per_photon,
-                    subshape)
+    @wf._xarray2numpy
+    @wf._calibrate_worker(calibrator, worker_corrections)
+    def statistics_worker(data, return_centers=False):
 
         ind = np.isfinite(data)
         counts, edges = np.histogram(data[ind], bins=nbins,
@@ -98,9 +91,6 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
 
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
-    adu_per_photon = calibrator.adu_per_photon
-    do_asic_commonmode = calibrator.worker_corrections['asic_commonmode']
-    subshape = calibrator.subshape
 
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)
