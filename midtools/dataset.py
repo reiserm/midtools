@@ -230,6 +230,7 @@ class Dataset:
                 "/train_resolved/correlation/q": [None],
                 "/train_resolved/correlation/t": [None],
                 "/train_resolved/correlation/g2": [None],
+                "/train_resolved/correlation/ttc": [None],
             },
             'FRAMES': {
                 "/average/intensity": [None],
@@ -467,6 +468,9 @@ class Dataset:
         else:
             pulse_spacing = pulse_step
             npulses = pulses_per_train
+            print("Pulse pattern decoder not found. Using: "
+                    f"pulse spacing {pulse_spacing} and "
+                    f"{npulses} pulses per train")
         return npulses, pulse_spacing
 
 
@@ -733,11 +737,12 @@ class Dataset:
                 use_multitau=True,
                 rebin_g2=False,
                 h5filename=self.file_name,
+                method='intra_train',
                 )
         xpcs_opt.update(self._xpcs_opt)
 
         print('Compute XPCS correlation funcions.')
-        out = correlate(self._calibrator, method='per_train', **xpcs_opt)
+        out = correlate(self._calibrator, **xpcs_opt)
         self._write_to_h5(out, 'XPCS')
 
 
@@ -827,7 +832,8 @@ class Dataset:
         with h5.File(self.file_name, 'r+') as f:
             keys = list(self.h5_structure[method.upper()].keys())
             for keyh5, item in zip(keys, output.values()):
-                f[keyh5] = item
+                if item is not None:
+                    f[keyh5] = item
 
 
 def _get_parser():

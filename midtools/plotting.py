@@ -403,9 +403,12 @@ class Dataset:
         if isinstance(run, int):
             self.info =  f"RUN: {self.run}({index})\n"
             if self.metadata is not None:
-                meta = self.metadata.loc[self.run]
-                cols = ['sample', 'att (%)']
-                self.info += "\n".join([col + f": {meta[col]}" for col in cols])
+                if self.run in self.metadata.index:
+                    meta = self.metadata.loc[self.run]
+                    cols = ['sample', 'att (%)']
+                    self.info += "\n".join([col + f": {meta[col]}" for col in cols])
+                else:
+                    pass
 
 
     def _rebin(self, arr, avr=False):

@@ -12,6 +12,7 @@ import copy
 from Xana import Xana
 import Xana.Setup
 from Xana.XpcsAna.pyxpcs3 import pyxpcs
+from Xana.XpcsAna.xpcsmethods import ttc_to_g2
 
 # reading AGIPD data provided by XFEL
 from extra_data import RunDirectory, stack_detector_data, open_run
@@ -27,7 +28,22 @@ from dask.diagnostics import ProgressBar
 from . import worker_functions as wf
 
 
-def correlate(calibrator, method='per_train', last=None, qmap=None,
+def ttc_to_g2_ufunc(ttc, dims, time=None):
+    return  xarray.apply_ufunc(
+                    ttc_to_g2,
+                    ttc,
+                    input_core_dims=[dims],
+                    kwargs={'time': time},
+                    dask='parallelized',
+                    output_dtypes=[float],)
+
+def convert_ttc(ttc):
+    ttc = ttc.reshape(int(np.sqrt(ttc.size)), -1)
+    g2 = ttc_to_g2(ttc)
+    return g2[:,1]
+
+
+def correlate(calibrator, method='intra_train', last=None, qmap=None,
     mask=None, setup=None, q_range=None, save_ttc=False, h5filename=None,
     norm_xgm=False, chunks=None, **kwargs):
     """Calculate XPCS correlation functions of a run using dask.
@@ -35,11 +51,13 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     Args:
         calibrator (Calibrator): the data broker.
 
+        method (str, optional): along which axis to correlate. Default is to
+            calculate the correlation function per train.
+
         last (int, optional): last train index. Defaults None. Set to small
             number for testing.
 
-        mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0. If None,
-            no pixel is masked.
+        mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0.
 
         setup ((Xana.Setup), optional): Xana setupfile. Defaults to None.
             If str, include path in the filename. Otherwise provide Xana Setup
@@ -62,7 +80,7 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     @wf._calibrate_worker(calibrator, worker_corrections)
     def calculate_correlation(data, return_='all', **kwargs):
 
-        data = data.reshape(npulses, 8192, 128)
+        data = data.reshape(-1, 8192, 128)
         wnan = np.isnan(np.sum(data, axis=0))
         xpcs_mask = mask_2d & ~wnan.reshape(8192,128)
 
@@ -75,10 +93,14 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
         out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False,
                 **kwargs)
 
-        corf = out['corf']
-        t = corf[1:,0]
-        corf = corf[1:,1:]
-        # ttc = out['twotime_corf'][0]
+        if method == 'intra_train':
+            corf = out['corf']
+            t = corf[1:,0]
+            corf = corf[1:,1:]
+        elif method == 'intra_train_ttc':
+            corf = np.dstack(out['twotime_corf'].values()).T
+            t = out['twotime_xy']
+
         if return_ == 'all':
             return t, corf, qv
         elif return_ == 'corf':
@@ -87,7 +109,9 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
             pass
 
     if chunks is None:
-        chunks = {'per_train': {'trainId': 1, 'train_data': 16*512*128}}
+        chunks = {'intra_train': {'trainId': 1, 'train_data': 16*512*128},
+                  'intra_train_ttc': {'trainId': 1, 'train_data': 16*512*128}}
+
 
     arr = calibrator.data.copy()
     npulses = np.unique(arr.pulseId.values).size
@@ -101,8 +125,9 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
         arr = arr / xgm[None, None, None, ...]
 
     arr = arr.unstack()
+    trainId = arr.trainId
     arr = arr.stack(train_data=('pulseId', 'module', 'dim_0', 'dim_1'))
-    arr = arr.chunk(chunks['per_train'])
+    arr = arr.chunk(chunks[method])
     npulses = arr.shape[1] // (16*512*128)
 
     if 'nsteps' in q_range:
@@ -122,22 +147,53 @@ def correlate(calibrator, method='per_train', last=None, qmap=None,
     mask_2d = mask.reshape(16*512,128)
 
     # do the actual calculation
-    if method == 'per_train':
-        t, corf, qv = calculate_correlation(arr[0], return_='all', **kwargs)
+    if 'intra_train' in method:
+        t, corf, qv = calculate_correlation(arr[0], return_='all',
+                **kwargs)
 
         dim = arr.get_axis_num("train_data")
         out = da.apply_along_axis(calculate_correlation, dim, arr.data,
             dtype='float32', shape=corf.shape, return_='corf', **kwargs)
 
-        out = out.persist()
-        progress(out)
+        if 'ttc' in method:
+            dset = xarray.Dataset(
+                    {
+                        "ttc": (["trainId", "qv", "t1", "t2"], out),
+                        },
+                    coords={
+                        "trainId": trainId,
+                        "t1": t,
+                        "t2": t,
+                        "qv": qv,
+                        },
+                    )
+            g2 = da.apply_along_axis(convert_ttc, 1,
+                    dset["ttc"].stack(meas=("trainId", "qv"), data=("t1", "t2")),
+                    dtype='float32', shape=(t.size,))
+            g2 = g2.reshape(dset.trainId.size, qv.size, t.size).swapaxes(1, 2)
+            dset = dset.assign_coords(t_cor=t[1:])
+            dset = dset.assign(g2=(("trainId", "t_cor", "qv"), g2[:,1:]))
+        else:
+            dset = xarray.Dataset(
+                    {
+                        "g2": (["trainId", "t_cor", "qv"], out),
+                        },
+                    coords={
+                        "trainId": trainId,
+                        "t_cor": t,
+                        "qv": qv,
+                        },
+                    )
 
-        savdict = {"q(nm-1)": qv,
-                   "t(s)": t,
-                   "corf": out.compute()}
-        del out
+        dset = dset.persist()
+        progress(dset)
+
+        savdict = {"q(nm-1)": dset.qv.values,
+                   "t(s)": dset.t_cor.values,
+                   "corf": dset.get('g2', None),
+                   "ttc": dset.get('ttc', None)}
         return savdict
     else:
-        raise(ValueError(f"Method {method} not understood. \
-                        Choose between 'average' and 'single'."))
+        raise(ValueError(f"Method {method} not understood. "
+                         "Choose between 'intra_train' and 'intra_train_ttc."))
     return
