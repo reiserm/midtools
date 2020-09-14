@@ -6,8 +6,7 @@ API
 Concept
 -------
 
-:class:`midtools.Dataset` is the basis of :mod:`midtools`. Amongst others,
-it:
+:class:`midtools.Dataset` is the basis of :mod:`midtools`. Amongst others it:
 
 * provides the command line interface,
 * reads the configuration file
@@ -40,8 +39,6 @@ The first three modules use the :code:`apply_along_axis` method from
 :code:`dask.array` to apply an algorithm on each train or pulse of a run.
 
 
-
-
 .. _the_dataset_class:
 
 :mod:`The Dataset Class`
@@ -52,7 +49,3 @@ The first three modules use the :code:`apply_along_axis` method from
    :special-members: __init__
 
 
-
-..
-   .. automodule:: midtools.azimuthal_integration
-      :members:

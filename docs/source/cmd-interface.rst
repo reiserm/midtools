@@ -69,7 +69,7 @@ you would run `midtools` like::
    >>> midtools setup.yml 11 --last 500 --run 011 --ppt 20 --dark-run 1 0
 
 
-.. warning:: Make sure to use all pulses when processing the dark run otherwise.
+.. warning:: Make sure to use all pulses when processing the dark run.
 
 
 Latest Changes and Remarks
