@@ -48,4 +48,8 @@ The first three modules use the :code:`apply_along_axis` method from
    :members:
    :special-members: __init__
 
+.. argparse::
+   :module: midtools.dataset
+   :func: _get_parser
+
 
