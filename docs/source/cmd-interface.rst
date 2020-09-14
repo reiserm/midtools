@@ -1,7 +1,7 @@
 Command Line Interface
 ======================
 
-After installation, **midtools** can be run from the command line. This is a 
+After installation, **midtools** can be run from the command line. This is a
 summary of the parser arguments:
 
 .. argparse::
@@ -40,3 +40,45 @@ This would assume that 100 pulses per train (ppt) were deliverd by the machine.
 
 .. note:: If you are insecure which arguments you should provide, pass all you
           know.
+
+
+Working With Raw Data
+---------------------
+
+Midtools comes with simple data calibration routines for HG (high-gain) AGIPD
+data including:
+
+- dark subtraction,
+- creating of a pixel mask based on dark and flatfield data,
+- baseline shift based on Ta-stripes,
+- flexible (spatial) commonmode correction (default: asic level 64x64 pixels),
+- dropletizing by thresholding (converting ADUs to photons).
+
+To work with raw data, a dark run has to be processed by passing the
+`--is-dark`-flag::
+
+   >>> midtools setup.yml 11 --last 500 --run 001 --ppt 200 --is-dark
+
+The output file would be `r0001-dark_000.h5` (the counter might not be `000`).
+
+To use a previously created dark file, pass the `--dark-run` argument.
+The argument requires both the **run number** and the file **index**.
+So if you want to use the dark file `r0001-dark_000.h5`,
+you would run `midtools` like::
+
+   >>> midtools setup.yml 11 --last 500 --run 011 --ppt 20 --dark-run 1 0
+
+
+.. warning:: Make sure to use all pulses when processing the dark run otherwise.
+
+
+Latest Changes and Remarks
+--------------------------
+
+`midtools` can read the pulse pattern from the machine control sources which in
+principle allows to omit the `--ppt` or `--pulses-per-train` argument. However,
+this source is not always available in the DAQ. Passing the argument manually
+will also overwride the settings read from the control source.
+
+
+

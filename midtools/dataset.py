@@ -683,7 +683,7 @@ class Dataset:
 
     def _compute_diagnostics(self):
         """Read diagnostic data. """
-        print(f"Read XGM data.")
+        print(f"Read XGM and control sources.")
         sources = {
                 'SA2_XTD1_XGM/XGM/DOOCS:output': [
                         'data.intensityTD', 'data.xTD', 'data.yTD'],

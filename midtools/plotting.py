@@ -482,7 +482,7 @@ class Dataset:
         return frames
 
 
-    def plot_images(self, run, index=0, vmin=None, vmax=None):
+    def plot_images(self, run, index=0, vmin=None, vmax=None, log=True):
         """Plot average image and some frames"""
 
         self.run = run, index
@@ -498,8 +498,12 @@ class Dataset:
         subax = [fig.add_subplot(gs_main[i:i+2, j:j+2])
                  for i in range(0,4,2) for j in range(4,8,2)]
 
+        if log:
+            norm = LogNorm()
+        else:
+            norm = None
         im = ax_main.imshow(self.geom.position_modules_fast(avr)[0], cmap='magma',
-                            norm=LogNorm(), vmin=vmin, vmax=vmax)
+                            norm=norm, vmin=vmin, vmax=vmax)
         ax_main.set_title('average trains')
 
         for i, (ax, frame) in enumerate(zip(subax, frames)):
@@ -665,7 +669,6 @@ class Dataset:
         counts, pstep = self._rebin(counts, **rebin_kws)
         xgm = self._rebin(xgm, **rebin_kws)[0]
         pulses = np.arange(counts.shape[0]) * pstep
-        print(xgm.shape, counts.shape)
 
         # make the plot
         fig, axs = plt.subplots(1, 2, figsize=(9,4),
@@ -697,6 +700,74 @@ class Dataset:
                 ax.set_ylabel("counts")
 
             ax.minorticks_on()
+        fig.suptitle(self.info.replace('\n', ' | '), fontsize=16)
+
+
+    @_run_to_filename
+    def load_sample_sources(self, filename):
+        h5keys = ["identifiers/train_indices",
+                  "/train_resolved/sample_position/y",
+                  "/train_resolved/sample_position/z",
+                  "/train_resolved/linkam-stage/temperature"]
+        keys = ['trains', 'y', 'z', 'T']
+
+        data = {}
+        with h5.File(filename, 'r') as f:
+            for h5key, key in zip(h5keys, keys):
+                if h5key in f:
+                    data[key] = np.array(f[h5key][:])
+                else:
+                    data[key] = -42 * np.ones_like(data['trains'])
+        return data
+
+
+    def plot_sample_sources(self, run, index=0, rebin_kws=None):
+        """Plot sample position and temperature"""
+
+        self.run = run, index
+        data = self.load_sample_sources(run, index=index)
+        trains, y, z, T = list(data.values())
+
+        yu, yc = np.unique(np.round(np.diff(y), 2), return_counts=True)
+        yu = yu[(yc>2).nonzero()]
+        yc = yc[(yc>2).nonzero()]
+        zu, zc = np.unique(np.abs(np.round(np.diff(z), 3)), return_counts=True)
+        ind = ((zc>10)&(np.abs(zu)<.4)).nonzero()
+        zu = zu[ind]
+        zc = zc[ind]
+        print(f"total {len(trains)} trains")
+        print(f"unique y steps (mm) {yu} occurred {yc}")
+        print(f"unique z steps (mm) {zu} occurred {zc}")
+        print(f"unique T steps (K) {np.unique(np.diff(T))}")
+        print(f"area: {y.max()- y.min():.2f} x {z.max()- z.min():.2f} (y * z)")
+
+        fig, axs = plt.subplots(2, 2, figsize=(6,6), constrained_layout=True)
+
+        ax = axs.flat[0]
+        ax.scatter(y, z, c=T, cmap='RdYlGn', alpha=.05)
+        ax.set_xlabel('y coordinate')
+        ax.set_ylabel('z coordinate')
+        ax.set_title('Sample position')
+
+        ax = axs.flat[1]
+        t = f'LINKAM T'
+        ax.scatter(trains, T, c=T, s=.1, cmap='RdYlGn', alpha=.05)
+        ax.set_title(t)
+        ax.set_ylabel('T (deg C)')
+
+        ax = axs.flat[2]
+        ax.plot(trains, z, '.')
+        ax.set_xlabel('trains')
+        ax.set_ylabel('z coordinate')
+
+        ax = axs.flat[3]
+        ax.plot(trains, y, '.')
+        ax.set_xlabel('trains')
+        ax.set_ylabel('y coordinate')
+
+        for ax in axs.flat:
+            ax.minorticks_on()
+
         fig.suptitle(self.info.replace('\n', ' | '), fontsize=16)
 
 
