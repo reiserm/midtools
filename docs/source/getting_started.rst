@@ -62,6 +62,10 @@ of the histogram.
         "train_resolved/correlation/q", "(nq,)", "XPCS q-bins"
         "train_resolved/correlation/t", "(ntimes,)", "XPCS delay times"
         "train_resolved/correlation/g2", "(ntrains,ntimes,nq)", "XPCS correlation functions"
+        "/train_resolved/correlation/ttc", (ntrains, ntimes, nq)", "two-time correlation functions"
         "/pulse_resolved/statistics/centers", "(npulses x ntrains, nbins)", "histogram bin centers"
         "/pulse_resolved/statistics/counts", "(npulses x ntrains, nbins)", "histogram bin counts"
+        "/train_resolved/sample_position/y", "(ntrains, )", "horizontal sample position"
+        "/train_resolved/sample_position/z", "(ntrains, )", "vertical sample positions"
+        "/train_resolved/linkam-stage/temperature", "(ntrains, )", "sample temperature"
 
