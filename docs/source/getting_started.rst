@@ -39,6 +39,9 @@ pixel in `x`- and `y`-direction, respectively. :code:`ntimes` is the number of
 delay times of the correlation function. :code:`nbins` is the number of bins
 of the histogram.
 
+..  note::
+    Momentum transfers are recorded in inverse nanometers.
+
 
 ..
     :code:`-1` means that the dimension
@@ -62,7 +65,7 @@ of the histogram.
         "train_resolved/correlation/q", "(nq,)", "XPCS q-bins"
         "train_resolved/correlation/t", "(ntimes,)", "XPCS delay times"
         "train_resolved/correlation/g2", "(ntrains,ntimes,nq)", "XPCS correlation functions"
-        "/train_resolved/correlation/ttc", (ntrains, ntimes, nq)", "two-time correlation functions"
+        "/train_resolved/correlation/ttc", "(ntrains, ntimes, nq)", "two-time correlation functions"
         "/pulse_resolved/statistics/centers", "(npulses x ntrains, nbins)", "histogram bin centers"
         "/pulse_resolved/statistics/counts", "(npulses x ntrains, nbins)", "histogram bin counts"
         "/train_resolved/sample_position/y", "(ntrains, )", "horizontal sample position"
