@@ -16,11 +16,11 @@ import h5py as h5
 import seaborn as sns
 
 from scipy.stats import sem
-# from midtools import Dataset as MIDData
 from Xana.XpcsAna.pyxpcs3 import pyxpcs
-from midtools import Dataset as midDataset
 from Xana.Xfit.fitg2global import G2
 from Xana.Xfit.fit_basic import fit_basic
+
+import pdb
 
 
 
@@ -68,7 +68,7 @@ def calc_snr(contrast, intensity,  pixels=1, patterns=1, repetitions=1):
 
 
 def calc_flux(energy, attenuation=1., photon_energy=9,
-              T_lenses=0.586, T_apperture=0.75):
+              T_lenses=0.586, T_apperture=0.75, T_air=0.39):
     """"Calculate the photon flux at MID
 
     Args:
@@ -92,7 +92,7 @@ def calc_flux(energy, attenuation=1., photon_energy=9,
     photon_energy_J = h_planck * 3e8 / wavelength
     energy_J = energy * 1e-6
     photons_per_pules = energy_J / photon_energy_J
-    return photons_per_pules  * attenuation * T_lenses * T_apperture
+    return photons_per_pules  * attenuation * T_lenses * T_apperture * T_air
 
 
 def calc_dose(flux, npulses=1, photon_energy=9, absorption=np.exp(-1),
@@ -200,37 +200,48 @@ def get_run_number(x):
 
 def check_contents(filename, return_h5structure=False):
     h5_structure = {
-           'META':[
-                "/identifiers/pulses_per_train",
-                "/identifiers/pulse_ids",
-                "/identifiers/train_ids",
-                "/identifiers/train_indices",],
-            'DIAGNOSTICS':[
-                "/pulse_resolved/xgm/energy"],
-            'SAXS':[
-                "/average/azimuthal_intensity",
-                "/average/image_2d",
-                "/average/image",
-                "/pulse_resolved/azimuthal_intensity/q",
-                "/pulse_resolved/azimuthal_intensity/I"],
-            'XPCS':[
-                "/train_resolved/correlation/q",
-                "/train_resolved/correlation/t",
-                "/train_resolved/correlation/g2",],
+           'META': {
+                "/identifiers/pulses_per_train": [None],
+                "/identifiers/pulse_ids": [None],
+                "/identifiers/train_ids": [None],
+                "/identifiers/train_indices": [None],
+            },
+            'DIAGNOSTICS': {
+                "/pulse_resolved/xgm/energy": [None],
+                "/pulse_resolved/xgm/pointing_x": [None],
+                "/pulse_resolved/xgm/pointing_y": [None],
+            },
+            'SAXS': {
+                "/pulse_resolved/azimuthal_intensity/q": [None],
+            },
+            'XPCS': {
+                "/train_resolved/correlation/q": [None],
+                "/train_resolved/correlation/t": [None],
+            },
+            'FRAMES': {
+                "/average/intensity": [None],
+            },
+            'STATISTICS': {
+                "/pulse_resolved/statistics/centers": [None],
+            },
         }
     if return_h5structure:
         return h5_structure
     else:
+        content = {}
         with h5.File(filename, 'r') as f:
-            content = {}
             for key, datasets in h5_structure.items():
                 content[key] = True
                 for dataset in datasets:
-                    if dataset in f:
-                        continue
-                    else:
+                    try:
+                        if dataset in f:
+                            continue
+                        else:
+                            content[key] = False
+                            break
+                    except Exception as e:
+                        print(str(e))
                         content[key] = False
-                        break
         return content
 
 
@@ -290,7 +301,7 @@ def _run_to_filename(func):
     def wrapper(obj, runid, index, *args, **kwargs):
         filename = obj._get_dataset_file(runid, index)
         setupfile = filename.replace('analysis', 'setup').replace('h5', 'yml')
-        obj.config = midDataset._read_setup(setupfile)
+        obj.config = None #Dataset._read_setup(setupfile)
         if not os.path.isfile(filename):
             raise FileNotFoundError(f"{filename}\ndoes not exiist")
         return func(obj, filename, *args, **kwargs)
@@ -356,7 +367,7 @@ def add_colorbar(ax, vec, label=None, cmap='magma', discrete=False,
     cb.ax.invert_yaxis()
     cb.ax.set_in_layout(True)
 
-class Dataset:
+class Interpreter:
     """Class to explore MID datasets.
     """
     def __init__(self, datasets, metadata=None, geom=None, max_len=100,
@@ -379,6 +390,23 @@ class Dataset:
         self.kwargs = kwargs
 
 
+    def iter_trainids(self, run, subset=None):
+        indices = np.array(self.datasets.index)[np.where(np.array(self.datasets.run) == run)[0]]
+        if subset is not None:
+            indices = np.intersect1d(indices, subset)
+        for index in indices:
+            yield index, self.load_identifier(run, index)[2]
+
+
+    def iter_files(self, run, subset=None):
+        indices = np.array(self.datasets.index)[np.where(np.array(self.datasets.run) == run)[0]]
+        files = np.array(self.datasets.file)[np.where(np.array(self.datasets.run) == run)[0]]
+        if subset is not None:
+            indices, in_list = np.intersect1d(indices, subset, return_indices=True)[:2]
+        for index, ind in zip(indices, in_list):
+            yield index, files[ind]
+
+
     def __str__(self,):
         if self.info is None:
             return "MID Dataset"
@@ -386,10 +414,13 @@ class Dataset:
             return self.info
 
 
-    def _get_dataset_file(self, runid, index=0):
-        return self.datasets.file[
-            np.where((np.array(self.datasets.run) == runid)
-                     & (np.array(self.datasets.index) == index))[0][0]]
+    def _get_dataset_file(self, runid, index=None):
+        if index is None:
+            cond = np.array(self.datasets.run) == runid
+        else:
+            cond = ((np.array(self.datasets.run) == runid)
+                         & (np.array(self.datasets.index) == index))
+        return self.datasets.file[np.where(cond)[0][0]]
 
     @property
     def run(self):
@@ -428,6 +459,25 @@ class Dataset:
             return arr, binned
         else:
             return arr, 1
+
+
+    @_run_to_filename
+    def load_identifier(self, filename):
+        keysh5 = ["identifiers/pulse_ids",
+                "identifiers/train_indices",
+                "identifiers/train_ids",
+                "identifiers/all_trains"]
+
+        args = ['pulseIds', 'train_indices', 'trainIds', 'all_trains']
+        out = {arg: None for arg in args}
+        with h5.File(filename, 'r') as f:
+            for key, arg in zip(keysh5, out.keys()):
+                if key in f:
+                    data = np.array(f[key])
+                    out[arg] = data
+                    setattr(self, arg, data)
+
+        return list(out.values())
 
 
     @_run_to_filename
@@ -476,17 +526,26 @@ class Dataset:
 
     @_run_to_filename
     def load_images(self, filename):
+        keysh5 = ["average/intensity",
+                "average/variance"]
+
+        args = ['frames', 'variance']
+        out = {arg: None for arg in args}
         with h5.File(filename, 'r') as f:
-            frames = f["average/intensity"][:]
-        self.frames = frames
-        return frames
+            for key, arg in zip(keysh5, out.keys()):
+                if key in f:
+                    data = np.array(f[key])
+                    out[arg] = data
+                    setattr(self, arg, data)
+
+        return list(out.values())[0]
 
 
     def plot_images(self, run, index=0, vmin=None, vmax=None, log=True):
         """Plot average image and some frames"""
 
         self.run = run, index
-        frames = self.load_images(run, index=index)
+        frames = self.load_images(run, index=index).reshape(-1, 16, 512, 128)
         avr = frames.mean(0)
         avr[avr <= 0] = 1e-3
 
@@ -571,21 +630,29 @@ class Dataset:
                              label=(f'pulse step {pstep} '
                                 f'average: {rebin_kws.get("avr", False)}'))
             ax.set_xlabel("q ($nm^{-1}$)")
-            ax.set_ylim(I[:,-50:].mean(), None)
+            ax.set_ylim(np.nanmean(I[:,-50:]), None)
             ax.minorticks_on()
         fig.suptitle(self.info.replace('\n', ' | '), fontsize=16)
 
 
     @_run_to_filename
     def load_correlation_functions(self, filename):
+        keysh5 = ["train_resolved/correlation/t",
+                  "train_resolved/correlation/q",
+                  "train_resolved/correlation/g2",
+                  "/train_resolved/correlation/ttc",
+                  "identifiers/train_indices"]
+
+        args = ['t_cor', 'qv', 'g2', 'ttc', 'train_indices']
+        out = {arg: None for arg in args}
         with h5.File(filename, 'r') as f:
-            t = f["train_resolved/correlation/t"][:]
-            q = f["train_resolved/correlation/q"][:]
-            g2 = f["train_resolved/correlation/g2"][:]
-            trains = f["identifiers/train_indices"][:]
-        self.g2 = (t, g2, q)
-        self.trains = trains
-        return t, g2, q, trains
+            for key, arg in zip(keysh5, out.keys()):
+                if key in f:
+                    data = np.array(f[key])
+                    out[arg] = data
+                    setattr(self, arg, data)
+
+        return list(out.values())
 
 
     def plot_correlation_functions(self, run, index=0, qval=0.1, g2_offset=0,
@@ -596,7 +663,7 @@ class Dataset:
             rebin_kws = self.kwargs.get('rebin_kws', {})
 
         self.run = run, index
-        t, g2, q, trains = self.load_correlation_functions(run, index=index)
+        t, q, g2, ttc, trains = self.load_correlation_functions(run, index=index)
         qind = np.argmin(np.abs(q-qval))
         qval = q[qind]
         t = t*1e6
@@ -643,9 +710,18 @@ class Dataset:
 
     @_run_to_filename
     def load_statistics(self, filename):
+        tmp = np.zeros((500))
+        count_path = '/pulse_resolved/statistics/counts'
+        centers_path = 'pulse_resolved/statistics/centers'
         with h5.File(filename, 'r') as f:
-            counts = f['/pulse_resolved/statistics/counts'][:]
-            centers = f['pulse_resolved/statistics/centers'][:]
+            if count_path in f:
+                counts = f[count_path][:]
+            else:
+                counts = np.ones(500)
+            if centers_path in f:
+                centers = f[centers_path][:]
+            else:
+                centers = np.ones(500)
             trains = f["identifiers/train_indices"][:]
         self.stats = (centers, counts)
         self.trains = trains
@@ -684,8 +760,8 @@ class Dataset:
         for i, (ax,) in enumerate(zip(axs,)):
 
             if i == 0:
-                im = ax.scatter(xgm_pulse_intensity, agipd_pulse_intensity,
-                                c=train_pulse, cmap=cmap)
+                #im = ax.scatter(xgm_pulse_intensity, agipd_pulse_intensity,
+                #                c=train_pulse, cmap=cmap)
                 ax.set_ylabel(f'agipd pulse intensity (a.d.u.)')
                 ax.set_xlabel(f'xgm pulse intensity ($\mu$J)')
 
@@ -771,36 +847,55 @@ class Dataset:
         fig.suptitle(self.info.replace('\n', ' | '), fontsize=16)
 
 
-    def to_xDataset(self, run, index=0):
+    def to_xDataset(self, run, index=0, major='g2', subset=['xgm', 'g2', 'azI', 'stats']):
         """Load data into xarray Dataset"""
 
         xgm, pulses, trains = self.load_xgm(run, index)
-        qI, I, trains = self.load_azimuthal_intensity(run, index)
-        t, g2, qv, trains = self.load_correlation_functions(run, index)
-        centers, counts, trains = self.load_statistics(run, index)
+        trains = self.load_identifier(run, index)[2]
+
+        if self.metadata is not None:
+            att = self.metadata.loc[run, 'att (%)'] / 100.
+            # beam_size = self.metadata.loc[run, 'Beam size / um']
+        flux = calc_flux(np.cumsum(xgm, axis=1), attenuation=att)
+        dose = calc_dose(flux, npulses=1, photon_energy=9, absorption=0.57,
+                     volume_fraction=300/1350, beam_size=10, density=1.35)
 
         dset = xr.Dataset(
                 {
                     "xgm": (["trainId", "pulseId"], xgm),
-                    "azI": (["trainId", "pulseId", "qI"],
-                                I.reshape(*xgm.shape, -1)),
-                    "g2": (["trainId", "t_cor", "qv"], g2),
-                    "stats": (["trainId", "pulseId", "centers"],
-                                counts.reshape(*xgm.shape, -1)),
+                    "dose": (["trainId", "pulseId"], dose),
                     },
                 coords={
                     "trainId": trains,
                     "pulseId": pulses,
-                    "t_cor": t,
-                    "qv": qv,
-                    "qI": qI,
-                    "centers": centers,
                     },
                 )
-        dset['g2I'] = (dset['azI'][..., np.abs(dset.qI - dset.qv).argmin('qI')]
-                       .mean('pulseId'))
-        dset['intercept'] = dset['g2'].isel(t_cor=0)
-        dset['baseline'] =dset['g2'].isel(t_cor=slice(-20,None)).mean('t_cor')
+        for var in subset:
+            if var == "azI":
+                qI, I, trains = self.load_azimuthal_intensity(run, index)
+                dset = dset.assign_coords({"qI": qI})
+                dset["azI"] = (["trainId", "pulseId", "qI"],
+                                I.reshape(*xgm.shape, -1))
+            elif var == "g2":
+                t, qv, g2, ttc, trains = self.load_correlation_functions(run, index)
+                dset = dset.assign_coords({ "t_cor": t, "qv": qv,})
+                dset["g2"] = (["trainId", "t_cor", "qv"], g2)
+                dset['intercept'] = dset['g2'].isel(t_cor=0)
+                dset['baseline'] = dset['g2'].sel(t_cor=max(dset.t_cor))
+                if ttc is not None and 'ttc' in subset:
+                    dset = dset.assign_coords({"t1": np.hstack(([0], t)),
+                                               "t2": np.hstack(([0], t))})
+                    dset['ttc'] = (['trainId', 'qv', 't1', 't2'], ttc)
+            elif var == 'stats':
+                centers, counts, trains = self.load_statistics(run, index)
+                dset = dset.assign_coords({"centers": centers})
+                dset["stats"] = (["trainId", "pulseId", "centers"],
+                                 counts.reshape(*xgm.shape, -1))
+
+        if "azI" in dset and "g2" in dset:
+            dset['g2I'] = (dset['azI'][..., np.abs(dset.qI - dset.qv).argmin('qI')]
+                           .mean('pulseId'))
+
         return dset
 
 

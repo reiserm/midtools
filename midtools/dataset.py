@@ -21,7 +21,7 @@ from extra_geom import AGIPD_1MGeometry
 import dask
 import dask_jobqueue
 import dask.array as da
-from dask.distributed import Client, progress
+from dask.distributed import Client, progress, LocalCluster
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
@@ -36,17 +36,22 @@ from .corrections import Calibrator, _create_mask_from_dark, _create_mask_from_f
 
 from functools import reduce
 
+from .plotting import get_datasets
+from .plotting import Interpreter
+
 import pdb
+
 
 class Dataset:
 
     METHODS = ['META', 'DIAGNOSTICS', 'FRAMES', 'SAXS', 'XPCS',
                'STATISTICS', 'DARK', 'FLATFIELD']
 
-    def __init__(self, setupfile, analysis=None, last_train=1e6,
-            run_number=None, dark_run_number=None, pulses_per_train=500,
-            first_cell=1, train_step=1, pulse_step=1, is_dark=False,
-            is_flatfield=False, flatfield_run_number=None):
+    def __init__(self, run_number, setupfile, analysis=None,
+            first_train=0, last_train=1e6, pulses_per_train=500,
+            dark_run_number=None, train_file='train-file.npy', pulse_file='pulse-file.npy',
+            first_cell=2, train_step=1, pulse_step=1, is_dark=False, localcluster=False,
+            is_flatfield=False, flatfield_run_number=None, out_dir='./', **kwargs):
         """Dataset object to analyze MID datasets on Maxwell.
 
         Args:
@@ -125,6 +130,10 @@ class Dataset:
                         steps: 10   # how many q-bins
         """
 
+        self.out_dir = out_dir
+        self.pulse_file = os.path.join(self.out_dir, pulse_file)
+        self.train_file = os.path.join(self.out_dir, train_file)
+
         #: str: Path to the setupfile.
         self.setupfile = setupfile
         setup_pars = self._read_setup(setupfile)
@@ -145,6 +154,7 @@ class Dataset:
 
         #: bool: True if the SLURMCluster is running
         self._cluster_running  = False
+        self._localcluster = localcluster
 
         self.analysis = ['meta', 'diagnostics']
         # reduce computation to _compute_dark or _compute_flatfield
@@ -167,11 +177,12 @@ class Dataset:
         self.pulses_per_train = pulses_per_train
         self.pulse_step = pulse_step
         self.train_step = train_step
+        self.first_train_idx = first_train
         self.last_train_idx = last_train
         self.first_cell = first_cell
 
         # placeholder set when computing META
-        self.pulse_ids = None
+        self.cell_ids = None
         self.train_ids = None
         self.ntrains = None
         self.train_indices = None
@@ -209,10 +220,12 @@ class Dataset:
         """
         h5_structure = {
            'META': {
-                "/identifiers/pulses_per_train": [None],
-                "/identifiers/pulse_ids": [None],
+                "/identifiers/pulses_per_train": [True],
+                "/identifiers/pulse_ids": [True],
                 "/identifiers/train_ids": [None],
                 "/identifiers/train_indices": [None],
+                "/identifiers/complete_trains": [True],
+                "/identifiers/all_trains": [True],
             },
             'DIAGNOSTICS': {
                 "/pulse_resolved/xgm/energy": [None],
@@ -223,12 +236,12 @@ class Dataset:
                 "/train_resolved/linkam-stage/temperature": [None],
             },
             'SAXS': {
-                "/pulse_resolved/azimuthal_intensity/q": [None],
+                "/pulse_resolved/azimuthal_intensity/q": [True],
                 "/pulse_resolved/azimuthal_intensity/I": [None],
             },
             'XPCS': {
-                "/train_resolved/correlation/q": [None],
-                "/train_resolved/correlation/t": [None],
+                "/train_resolved/correlation/q": [True],
+                "/train_resolved/correlation/t": [True],
                 "/train_resolved/correlation/g2": [None],
                 "/train_resolved/correlation/ttc": [None],
             },
@@ -238,7 +251,7 @@ class Dataset:
                 "/average/image_2d": [None],
             },
             'STATISTICS': {
-                "/pulse_resolved/statistics/centers": [None],
+                "/pulse_resolved/statistics/centers": [True],
                 "/pulse_resolved/statistics/counts": [None],
             },
             'DARK': {
@@ -376,9 +389,9 @@ class Dataset:
 
             # if the key exists in the setup file without any entries, None is
             # returned. We convert those entries to empty dictionaires.
-            for key, value in setup_pars.items():
+            for key, value in list(setup_pars.items()):
                 if value is None:
-                    setup_pars[key] = {}
+                    setup_pars.pop(key)
             return setup_pars
 
 
@@ -392,7 +405,11 @@ class Dataset:
 
     @mask.setter
     def mask(self, mask):
-        if mask is None:
+        local_mask_file = os.path.join(self.out_dir, 'mask.npy')
+        if os.path.isfile(local_mask_file):
+            mask = np.load(local_mask_file)
+            print(f"Loaded local mask-file: {local_mask_file}")
+        elif mask is None:
             mask = np.ones((16,512,128), 'bool')
         elif isinstance(mask, str):
             try:
@@ -450,21 +467,27 @@ class Dataset:
     def _get_pulse_pattern(self, pulses_per_train=500, pulse_step=1):
         """determine pulses pattern from machine source"""
         source = 'MID_RR_SYS/MDL/PULSE_PATTERN_DECODER'
-        if source in self.run.all_sources:
+        if os.path.isfile(self.pulse_file):
+            pass
+        elif source in self.run.all_sources and not (self.is_dark or self.is_flatfield):
             pulses = self.run.get_array(source, 'sase2.pulseIds.value')
             pulse_spacing = np.unique(pulses.where(pulses>199).diff('dim_0'))
             pulse_spacing = pulse_spacing[np.isfinite(pulse_spacing)].astype('int32')
-            npulses = np.unique((pulses // 200).sum('dim_0'))
+            pulseIds = pulses // 200
+            npulses = np.unique((pulseIds > 0).sum('dim_0'))
             if len(npulses) == 1:
                 npulses = min(npulses[0], pulses_per_train)
                 print(f"Analyzing {npulses} pulses per train.")
             else:
-                raise ValueError("Varying number of pulses per train is not supported.")
+                print(f"Found various number of pulses per train {npulses}.")
+                npulses = min(max(npulses), pulses_per_train)
             if len(pulse_spacing) == 1:
-                pulse_spacing = max(pulse_spacing[0]//2, pulse_step)
+                pulse_spacing = pulse_step # max(pulse_spacing[0]//2, pulse_step)
                 print(f"Using pulse spacing of {pulse_spacing}.")
             else:
-                raise ValueError("Varying the pulse spacing is not supported.")
+                print(f"Varying the pulse spacing is not supported. Found {pulse_spacing}")
+                pulse_spacing = pulse_step # max(min(pulse_spacing[0]//2), pulse_step)
+                print(f"Using {pulse_spacing} cell_spacing")
         else:
             pulse_spacing = pulse_step
             npulses = pulses_per_train
@@ -474,7 +497,7 @@ class Dataset:
         return npulses, pulse_spacing
 
 
-    def _get_pulse_ids(self, train_idx=0):
+    def _get_cell_ids(self, train_idx=0):
         source = 'MID_DET_AGIPD1M-1/DET/{}CH0:xtdf'
         i = 0
         while i < 10:
@@ -483,8 +506,8 @@ class Dataset:
                     s = source.format(module)
                     tid, train_data = self.run.select(s,
                             'image.pulseId').train_from_index(train_idx)
-                    pulse_ids = np.array(train_data[s]['image.pulseId'])
-                    return pulse_ids.flatten()
+                    cell_ids = train_data[s]['image.pulseId']
+                    return np.array(cell_ids)
                 except KeyError:
                     pass
             i += 1
@@ -506,9 +529,9 @@ class Dataset:
         self.setup.detector.IS_CONTIGUOUS = False
         self.setup.detector.set_pixel_corners(dist)
         self.setup._update_ai()
-        qmap = self.setup.ai.array_from_unit(unit='q_nm^-1');
+        qmap = self.setup.ai.array_from_unit(unit='q_nm^-1')
         #: np.ndarray: q-map
-        self.qmap = qmap.reshape(16,512,128);
+        self.qmap = qmap.reshape(16,512,128)
 
 
     def _start_slurm_cluster(self):
@@ -517,27 +540,34 @@ class Dataset:
         opt = self._slurm_opt
         # nprocs = 72//threads_per_process
         nprocs = opt.pop('nprocs', 12)
-        threads_per_process = opt.pop('cores', nprocs)
+        threads_per_process = opt.pop('cores', 72)
+        if self.is_dark or self.is_flatfield:
+            nprocs = 1
         njobs = opt.pop('njobs', min(max(int(self.ntrains/64), 4), 12))
-        print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
-        self._cluster = SLURMCluster(
-            queue=opt.get('partition',opt.pop('partition', 'exfel')),
-            processes=nprocs,
-            cores=threads_per_process,
-            memory=opt.pop('memory', '768GB'),
-            log_directory='./dask_log/',
-            local_directory='/scratch/',
-            nanny=True,
-            death_timeout=3600*2,
-            walltime="03:00:00",
-            interface='ib0',
-            name='MIDtools',
-        )
+        if self._localcluster:
+            self._cluster = LocalCluster(
+                    n_workers=nprocs,
+                    )
+        else:
+            print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
+            self._cluster = SLURMCluster(
+                queue=opt.get('partition', opt.pop('partition', 'exfel')),
+                processes=nprocs,
+                cores=threads_per_process,
+                memory=opt.pop('memory', '768GB'),
+                log_directory='./dask_log/',
+                local_directory='/scratch/',
+                nanny=True,
+                death_timeout=30,
+                walltime="01:00:00",
+                interface='ib0',
+                name='MIDtools',
+            )
+            self._cluster.scale(nprocs*njobs)
+            # self._cluster.adapt(maximum_jobs=njobs)
 
-        self._cluster.scale(nprocs*njobs)
         print(self._cluster)
         self._client = Client(self._cluster)
-        self._calibrator._client = self._client
         print("Cluster dashboard link:", self._cluster.dashboard_link)
 
 
@@ -550,49 +580,64 @@ class Dataset:
     def _create_output_file(self):
         """Create the HDF5 output file.
         """
+        if not os.path.exists(self.out_dir):
+            os.mkdir(self.out_dir)
+
+        if self.is_dark:
+            ftype = 'dark'
+        elif self.is_flatfield:
+            ftype = 'flatfield'
+        else:
+            ftype = 'analysis'
 
         # check existing files and determine counter
-        existing = os.listdir('./')
-        search_str = (f"(?<=r{self.run_number:04}-analysis_)"
+        existing = os.listdir(self.out_dir)
+        search_str = (f"(?<=r{self.run_number:04}-{ftype})"
                       ".*\d{3,}(?=\.h5)")
-        if self.is_dark:
-            search_str = search_str.replace('analysis', 'dark')
-        elif self.is_flatfield:
-            search_str = search_str.replace('analysis', 'flatfield')
 
         counter = map(re.compile(search_str).search, existing)
         counter = filter(lambda x: bool(x), counter)
-        counter = list(map(lambda x: int(x[0]), counter))
+        counter = list(map(lambda x: int(x[0][-3:]), counter))
 
         identifier = max(counter) + 1 if len(counter) else 0
-        filename = f"./r{self.run_number:04}-analysis_{identifier:03}.h5"
 
-        if self.is_dark:
-            filename = filename.replace('analysis', 'dark')
-        elif self.is_flatfield:
-            filename = filename.replace('analysis', 'flatfield')
+        # depricated include last and first
+        # if self.is_dark or self.is_flatfield:
+        #     filename = f"r{self.run_number:04}-analysis_{identifier:03}.h5"
+        # else:
+        #     # filename = f"r{self.run_number:04}-analysis_{self.first_train_idx}-{self.last_train_idx}_{identifier:03}.h5"
+        #     filename = f"r{self.run_number:04}-analysis_{identifier:03}.h5"
 
-        self.file_name = os.path.abspath(filename)
 
         # this part is just a placeholder and simply creates the HDF5-file
-        with h5.File(self.file_name, 'a') as f:
-            for flag, method in zip(self.analysis, self.METHODS):
-                pass
-                # for path,(shape,dtype) in self.h5_structure[method].items():
-                #     pass
-                #     # f.create_dataset(path, shape=shape, dtype=dtype)
+        while True:
+            try:
+                filename = f"r{self.run_number:04}-{ftype}_{identifier:03}.h5"
+                self.file_name = os.path.join(self.out_dir, filename)
+                with h5.File(self.file_name, 'a') as f:
+                    for flag, method in zip(self.analysis, self.METHODS):
+                        pass
+                        # for path,(shape,dtype) in self.h5_structure[method].items():
+                        #     pass
+                        #     # f.create_dataset(path, shape=shape, dtype=dtype)
+                break
+            except OSError as e:
+                print(str(e))
+                print("Incrementing counter")
+                identifier += 1
 
-        with open(self.setupfile) as file:
-            setup_pars = yaml.load(file, Loader=yaml.FullLoader)
+        with open(self.setupfile) as f:
+            setup_pars = yaml.load(f, Loader=yaml.FullLoader)
 
         # attributes to save in copied setupfile
-        attrs = ['is_dark', 'dark_run_number', 'run_number',
+        attrs = ['datdir', 'is_dark', 'dark_run_number', 'run_number',
                  'pulses_per_train', 'is_flatfield', 'flatfield_run_number',]
         setup_pars.update({attr: getattr(self, attr) for attr in attrs})
         setup_pars['analysis'] = self.analysis
 
         # copy the setupfile
-        new_setupfile  = f"./r{self.run_number:04}-setup_{identifier:03}.yml"
+        new_setupfile  = f"r{self.run_number:04}-setup_{identifier:03}.yml"
+        new_setupfile = os.path.join(self.out_dir, new_setupfile)
 
         with open(new_setupfile, 'w') as f:
             yaml.dump(setup_pars, f)
@@ -615,11 +660,19 @@ class Dataset:
                     if self._calibrator.data is None:
                         self._calibrator._get_data()
                 print(f"\n{method.upper():-^50}")
-                getattr(self,f"_compute_{method.lower()}")()
+                repetition = 0
+                while repetition < 5:
+                    success = getattr(self,f"_compute_{method.lower()}")()
+                    if success:
+                        break
+                    else:
+                        print(f'Compute {method} failed repetition {repetition}')
+                        repetition += 1
+                        self._client.restart()
+                        self._calibrator._get_data()
                 # print(f"{' Done ':-^50}")
-                # pdb.set_trace()
-                if self._cluster_running:
-                    self._client.restart()
+                # if self._cluster_running:
+                #     self._client.restart()
         finally:
             if self._client is not None:
                 self._stop_slurm_cluster()
@@ -631,54 +684,60 @@ class Dataset:
         self.pulses_per_train, self.pulse_step = self._get_pulse_pattern(
                                         self.pulses_per_train, self.pulse_step)
 
-        pulse_slice = slice(self.first_cell,
-                self.first_cell + self.pulses_per_train * self.pulse_step,
-                self.pulse_step)
         #: np.ndarray: Array of pulse IDs.
-        self.pulse_ids = self._get_pulse_ids()[pulse_slice]
+        self.cell_ids = self._get_cell_ids()
+        first_cell_index = np.where(self.cell_ids == self.first_cell)[0][0]
+        cell_slice = slice(first_cell_index,
+                first_cell_index + self.pulses_per_train * self.pulse_step,
+                self.pulse_step)
+        self.cell_ids = self.cell_ids[cell_slice]
         #: int: Number of X-ray pulses per train.
-        self.pulses_per_train = min(len(self.pulse_ids), self.pulses_per_train)
+        self.pulses_per_train = min(len(self.cell_ids), self.pulses_per_train)
         #: float: Delay time between two successive pulses.
-        self.pulse_delay = np.diff(self.pulse_ids)[0]*220e-9
-        #: np.ndarray: All train IDs.
-        self.train_ids = np.array(self.run.train_ids)
+        self.pulse_delay = np.diff(self.cell_ids)[0]*220e-9
+
+        all_trains = self.run.train_ids
+        complete_train_ids, self.train_indices = self._get_good_trains(self.run)
+        self.train_ids = complete_train_ids.copy()
+        if os.path.isfile(self.train_file):
+            print(f'Loaded train-file {self.train_file}')
+            train_ids = np.load(self.train_file).astype('int64')
+            self.train_ids, self.train_indices, _ = np.intersect1d(all_trains, train_ids, return_indices=True)
+
+        print(f'{self.train_ids.size} of {len(all_trains)} trains are complete.')
+
         #: int: last train index to compute
         self.last_train_idx = min([self.last_train_idx, len(self.train_ids)])
-        #: int: Number of complete trains
-        self.ntrains = min([len(self.train_ids), self.last_train_idx])
-        #: np.ndarray: All train indices.
-        self.train_indices = np.arange(self.train_ids.size)
 
-        all_trains = len(self.train_ids)
-        self.train_ids, self.train_indices = self._get_good_trains(self.run)
-        print(f'{self.train_ids.size} of {all_trains} trains are complete.')
+        if self.first_train_idx > len(self.train_ids):
+            raise ValueError("First train index {self.first_train_idx} > number of trains {len(self.train_ids)}")
 
-        self.last_train_idx = min([self.last_train_idx,self.train_indices.size])
-        self.ntrains = min([self.train_ids.size, self.last_train_idx])
-        self.train_ids = self.train_ids[:self.ntrains]
-        self.train_indices = self.train_indices[:self.ntrains]
-        print(f'{self.ntrains} of {all_trains} trains will be processed.')
+        self.train_ids = self.train_ids[self.first_train_idx:self.last_train_idx]
+        self.ntrains = len(self.train_ids)
+        self.train_indices = self.train_indices[self.first_train_idx:self.last_train_idx]
+        print(f'Processing train {self.first_train_idx} to {self.last_train_idx}\n'
+              f'{self.ntrains} of {len(all_trains)} trains will be processed.')
 
         data = {'pulses_per_train': self.pulses_per_train,
-                'pulse_ids': self.pulse_ids,
+                'pulse_ids': self.cell_ids,
                 'train_ids': self.train_ids,
-                'train_indices': self.train_indices,}
+                'train_indices': self.train_indices,
+                'complete_train_ids': complete_train_ids,
+                'all_train_ids': all_trains}
 
         self._write_to_h5(data, 'META')
 
         # initialize the calibrator (data broker)
         self._calibrator = Calibrator(self.run,
-                                      first_cell=self.first_cell,
-                                      pulses_per_train=self.pulses_per_train,
-                                      last_train=self.last_train_idx,
-                                      train_step=self.train_step,
-                                      pulse_step=self.pulse_step,
+                                      cell_ids=self.cell_ids,
+                                      train_ids=self.train_ids,
                                       dark_run_number=self.dark_run_number,
                                       mask=self.mask.copy(),
                                       is_dark=self.is_dark,
                                       is_flatfield=self.is_flatfield,
                                       flatfield_run_number=self.flatfield_run_number,
                                       **self._calib_opt)
+        return True
 
 
     def _compute_diagnostics(self):
@@ -698,12 +757,13 @@ class Dataset:
             for key in sources[source]:
                 data = self.run.get_array(source, key)
                 if len(data.dims) == 2:
-                    data = data[self.train_indices,:self.pulses_per_train]
+                    data = data.sel(trainId=self.train_ids)[:, :len(self.cell_ids)]
                 elif len(data.dims) == 1:
-                    data = data[self.train_indices]
+                    data = data.sel(trainId=self.train_ids)
                 arr['/'.join((source, key))] = data
 
         self._write_to_h5(arr, 'DIAGNOSTICS')
+        return True
 
 
     def _compute_saxs(self):
@@ -711,10 +771,13 @@ class Dataset:
 
         saxs_opt = dict(
 	        mask=self.mask,
-                setup=self.setup,
                 geom=self.agipd_geom,
-                last=self.ntrains,
+                last=self.last_train_idx,
                 max_trains=200,
+                distortion_array=self.agipd_geom.to_distortion_array(),
+                sample_detector=self.sample_detector,
+                photon_energy=self.photon_energy,
+                center=self.center,
                 )
         saxs_opt.update(self._saxs_opt)
 
@@ -722,7 +785,11 @@ class Dataset:
         out = azimuthal_integration(self._calibrator, method='single',
                 **saxs_opt)
 
-        self._write_to_h5(out, 'SAXS')
+        if out['soq-pr'].shape[0] == (self.ntrains*self.pulses_per_train):
+            self._write_to_h5(out, 'SAXS')
+            return True
+        else:
+            return False
 
 
     def _compute_xpcs(self):
@@ -732,7 +799,7 @@ class Dataset:
 	        mask=self.mask,
                 qmap = self.qmap,
                 setup=self.setup,
-                last=self.ntrains,
+                last=self.last_train_idx,
                 dt=self.pulse_delay,
                 use_multitau=True,
                 rebin_g2=False,
@@ -743,14 +810,20 @@ class Dataset:
 
         print('Compute XPCS correlation funcions.')
         out = correlate(self._calibrator, **xpcs_opt)
-        self._write_to_h5(out, 'XPCS')
+
+        if out['corf'].shape[0] == self.ntrains:
+            self._write_to_h5(out, 'XPCS')
+            return True
+        else:
+            return False
 
 
     def _compute_frames(self):
         """Averaging frames."""
 
         frames_opt = dict(axis='pulse',
-                          last_train=self.ntrains)
+                          trainIds=self.train_ids,
+                          max_trains=10)
         frames_opt.update(self._frames_opt)
 
         print('Computing frames.')
@@ -760,12 +833,14 @@ class Dataset:
         out.update({'image2d': img2d})
 
         self._write_to_h5(out, 'FRAMES')
+        return True
 
 
     def _compute_dark(self):
         """Averaging darks."""
 
         dark_opt = dict(axis='train',
+                        first_train=self.first_train_idx,
                         last_train=self.last_train_idx,)
         dark_opt.update(self._dark_opt)
         # we need to remove the options for masking before passing the dict
@@ -782,13 +857,15 @@ class Dataset:
         out['median'] = median
 
         self._write_to_h5(out, 'DARK')
+        return True
 
 
     def _compute_flatfield(self):
         """Process flatfield."""
 
         flatfield_opt = dict(axis='train',
-                             last_train=self.last_train_idx,)
+                             first_train=self.first_train_idx,
+                             last_train=self.last_train_idx)
         flatfield_opt.update(self._flatfield_opt)
 
         # we need to remove the options for masking before passing the dict
@@ -807,6 +884,7 @@ class Dataset:
         out['median'] = median
 
         self._write_to_h5(out, 'FLATFIELD')
+        return True
 
 
     def _compute_statistics(self):
@@ -816,7 +894,7 @@ class Dataset:
 	        mask=self.mask,
                 setup=self.setup,
                 geom=self.agipd_geom,
-                last=self.ntrains,
+                last=self.last_train_idx,
                 max_trains=200,
                 )
         statistics_opt.update(self._statistics_opt)
@@ -824,16 +902,80 @@ class Dataset:
         print('Compute pulse resolved statistics')
         out = statistics(self._calibrator, **statistics_opt)
 
-        self._write_to_h5(out, 'STATISTICS')
+        if out['counts'].shape[0] == (self.ntrains*self.pulses_per_train):
+            self._write_to_h5(out, 'STATISTICS')
+            return True
+        else:
+            return False
 
 
     def _write_to_h5(self, output, method):
         """Dump results in HDF5 file."""
-        with h5.File(self.file_name, 'r+') as f:
+        if self.file_name is not None:
             keys = list(self.h5_structure[method.upper()].keys())
-            for keyh5, item in zip(keys, output.values()):
-                if item is not None:
-                    f[keyh5] = item
+            with h5.File(self.file_name, 'r+') as f:
+                for keyh5, data in zip(keys, output.values()):
+                    if data is not None:
+                        # check scalars and fixed_size
+                        if np.isscalar(data):
+                            f[keyh5] = data
+                        else:
+                            f.create_dataset(keyh5, data=data, compression="gzip",
+                                    chunks=True,)
+        else:
+            warnings.warn('Results not saved. Filename not specified')
+
+
+    def merge_files(self, subset=None, delete_file=False):
+        """merge existing HDF5 files for a run"""
+        datasets = get_datasets(self.out_dir)
+        ds = Interpreter(datasets)
+        all_trains = [t[1] for t in ds.iter_trainids(self.run_number, subset)]
+        files = [x[1] for x in ds.iter_files(self.run_number, subset)]
+        all_trains = np.unique(np.hstack(all_trains))
+        ind_in_files = []
+        first_in_all = []
+        filenames = []
+        for file_index, (index, trains) in enumerate(ds.iter_trainids(self.run_number, subset)):
+            if len(trains) == 0:
+                continue
+            ind_in_file, ind_all = np.intersect1d(trains, all_trains, return_indices=True)[1:]
+            if not len(ind_in_file):
+                continue
+            ind_in_files.append(ind_in_file)
+            first_in_all.append(ind_all[0])
+            all_trains = np.delete(all_trains, ind_all)
+            filenames.append(files[file_index])
+
+        file_order = np.argsort(first_in_all)
+        filenames = np.array(filenames)[file_order]
+
+        self._create_output_file()
+
+        keys = [x for y in self.h5_structure.values() for x in y.keys()]
+        with h5.File(self.file_name, 'a') as F:
+
+            for filename in filenames:
+                with h5.File(filename, 'r') as f:
+                    for method in self.h5_structure:
+                        for key, value in self.h5_structure[method].items():
+                            fixed_size = bool(value[0])
+                            if key in f:
+                                data = f[key]
+                                s = data.shape
+                                if not key in F:
+                                    # check scalars and fixed_size
+                                    if len(s) == 0:
+                                        F[key] = np.array(data)
+                                    else:
+                                        F.create_dataset(key, data=data, compression="gzip",
+                                                chunks=True, maxshape=(None,*s[1:]))
+                                else:
+                                    if not fixed_size:
+                                        F[key].resize((F[key].shape[0]+s[0]), axis=0)
+                                        F[key][-s[0]:] = data
+                if delete_file:
+                    os.remove(filename)
 
 
 def _get_parser():
@@ -873,10 +1015,16 @@ def _get_parser():
             nargs=2,
             )
     parser.add_argument(
-            '--last',
+            '--last-train',
             type=int,
             help='last train to analyze.',
             default=1_000_000,
+            )
+    parser.add_argument(
+            '--first-train',
+            type=int,
+            help='first train to analyze.',
+            default=0,
             )
     parser.add_argument(
             '-ppt',
@@ -921,37 +1069,145 @@ def _get_parser():
             default=None,
             nargs=2,
             )
+    parser.add_argument(
+            '--out-dir',
+            type=str,
+            help='Output directory',
+            default='./',
+            nargs='?',
+            )
+    parser.add_argument(
+        '--chunk',
+        nargs='?',
+        default=None,
+        type=int,
+        required=False,
+        help="Split the number of trains in chunks of this size (default do not chunk)",
+    )
+    parser.add_argument(
+        '--job-dir',
+        default="/gpfs/exfel/data/scratch/reiserm/mid-proteins/jobs/",
+        required=False,
+        help="Directory for the slurm output and error files",
+    )
+    parser.add_argument(
+        '--slurm',
+        default=False,
+        const=True,
+        nargs='?',
+        required=False,
+        help="Run midtools on dedicated node with slurm job (default False)",
+    )
+    parser.add_argument(
+        '--localcluster',
+        default=False,
+        const=True,
+        nargs='?',
+        required=False,
+        help="Use dasks LocalCluster to run midtools locally (default False)",
+    )
     return parser
 
 
-def main():
+def _submit_slurm_job(run, args):
+    args = dict(args)
+    job_dir = args.pop('job_dir', './jobs')
+    job_dir = os.path.abspath(job_dir)
 
-    # get the command line arguments
-    parser = _get_parser()
-    args = parser.parse_args()
+    setupfile = args.pop('setupfile')
+    analysis = args.pop('analysis')
+    for key, val in list(args.items()):
+        if not bool(val):
+            args.pop(key)
+        elif isinstance(val, (list, tuple)):
+            args[key] = " ".join(map(str, val))
+
+    midtools_args = " ".join([f"--{arg.replace('_','-')} {val}" for arg, val in args.items()])
+
+    print(f"Generating sbatch jobs for run: {run}")
+
+    if not os.path.exists(job_dir):
+        os.mkdir(job_dir)
+
+    TEMPLATE="""#!/bin/bash
+#SBATCH --job-name=midtools
+#SBATCH --output={job_file}.out
+#SBATCH --error={job_file}.err
+#SBATCH --partition=upex
+#SBATCH --exclusive
+#SBATCH --time 01:00:00
+
+source /gpfs/exfel/data/scratch/reiserm/mid-proteins/.proteins/bin/activate
+type midtools
+
+ulimit -n 4096
+ulimit -c unlimited
+midtools {setupfile} {analysis} -r {run} {midtools_args}
+
+exit
+"""
+
+    print(f"With arguments: `{midtools_args}`")
+
+    timestamp = time.strftime("%Y-%m-%dT%H-%M-%S")
+    random_id =  np.random.randint(0, 999)
+    job_name = f"{timestamp}-{random_id:03}-run{run}"
+    job_file = f"{job_dir}/{job_name}.job"
+
+    job = TEMPLATE.format_map({
+        'setupfile': setupfile,
+        'analysis': analysis,
+        'run': run,
+        'job_name': job_name,
+        'job_file': job_file,
+        'midtools_args': midtools_args
+    })
+
+    print(f"Generating and submitting sbatch for job {job_name}")
+
+    with open(job_file, "w") as f:
+        f.write(job)
+
+    os.system(f"sbatch {job_file}")
+
+
+def run_single(run_number, setupfile, analysis, **kwargs):
 
     t_start = time.time()
 
-    data = Dataset(args.setupfile,
-                   analysis=args.analysis,
-                   last_train=args.last,
-                   run_number=args.run,
-                   pulses_per_train=args.pulses_per_train,
-                   dark_run_number=args.dark_run,
-                   pulse_step=args.pulse_step,
-                   train_step=args.train_step,
-                   is_dark=args.is_dark,
-                   is_flatfield=args.is_flatfield,
-                   flatfield_run_number=args.flatfield_run,
-                   )
-    print("Development Mode")
+    dataset = Dataset(run_number, setupfile, analysis, **kwargs)
+    print("Protein Mode")
     print(f"\n{' Starting Analysis ':-^50}")
-    print(f"Analyzing {data.datdir}")
-    data.compute()
+    print(f"Analyzing {dataset.datdir}")
+    dataset.compute()
 
     elapsed_time = time.time() - t_start
     print(f"\nFinished: elapsed time: {elapsed_time/60:.2f}min")
-    print(f"Results saved under {data.file_name}\n")
+    print(f"Results saved under {dataset.file_name}\n")
+
+
+def main():
+    parser = _get_parser()
+    args = vars(parser.parse_args())
+
+    run = args.pop('run')
+    if args['chunk'] is None:
+        if args['slurm']:
+            args['slurm'] = False
+            _submit_slurm_job(run, args)
+        else:
+            setupfile = args.pop('setupfile')
+            analysis = args.pop('analysis')
+            run_single(run, setupfile, analysis, **args)
+    else:
+        args['slurm'] = False
+        first, last = args['first_train'], args['last_train']
+        chunksize = args.pop('chunk')
+        for first in range(first, last, chunksize):
+            args['first_train'] = first
+            args['last_train'] = first + chunksize
+            _submit_slurm_job(run, args)
+
 
 if __name__ == "__main__":
     main()

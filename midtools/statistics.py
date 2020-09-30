@@ -64,8 +64,7 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
     def statistics_worker(data, return_centers=False):
 
         ind = np.isfinite(data)
-        counts, edges = np.histogram(data[ind], bins=nbins,
-                range=hist_range)
+        counts, edges = np.histogram(data[ind], bins=bins)
 
         if return_centers:
             centers = edges[:-1] + (edges[1] - edges[0]) / 2
@@ -85,25 +84,24 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
             nbins = 11
         else:
             nbins = 500
+    bins = np.linspace(*hist_range, nbins)
 
     if chunks is None:
-        chunks = {'train_pulse': 128, 'pixels': 128*512}
+        chunks = {'train_pulse': 32, 'pixels': 16*128*512}
 
-    arr = calibrator.data.copy()
-    npulses = np.unique(arr.pulseId.values).size
+    arr = calibrator.data.copy(deep=False)
 
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)
-    centers = np.linspace(*hist_range, num=nbins+1)
-    centers = centers[:-1] + (centers[1] - centers[0]) / 2
+    centers = bins[:-1] + (bins[1] - bins[0]) / 2
 
     dim = arr.get_axis_num("pixels")
     arr = da.apply_along_axis(statistics_worker, dim, \
         arr.data, dtype='float32', shape=(500,))
 
-    arr = arr.persist()
-    progress(arr)
-
-    savdict = {'centers': centers, 'counts': arr.compute()}
+    res = arr.persist()
+    progress(res)
     del arr
+    res = res.compute()
+    savdict = {'centers': centers, 'counts': res}
     return savdict

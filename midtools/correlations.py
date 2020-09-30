@@ -2,6 +2,7 @@ import pdb
 # standard python packages
 import numpy as np
 import scipy.integrate as integrate
+import scipy.ndimage as ndimage
 from time import time
 import pickle
 import xarray
@@ -37,10 +38,24 @@ def ttc_to_g2_ufunc(ttc, dims, time=None):
                     dask='parallelized',
                     output_dtypes=[float],)
 
+
 def convert_ttc(ttc):
     ttc = ttc.reshape(int(np.sqrt(ttc.size)), -1)
     g2 = ttc_to_g2(ttc)
     return g2[:,1]
+
+
+def blur_gauss(U, sigma=2.0, truncate=4.0):
+
+    V = U.copy()
+    V[np.isnan(U)] = 0
+    VV = ndimage.gaussian_filter(V, sigma=sigma, truncate=truncate)
+
+    W = 0*U.copy() + 1
+    W[np.isnan(U)] = 0
+    WW = ndimage.gaussian_filter(W, sigma=sigma, truncate=truncate)
+
+    return VV / WW
 
 
 def correlate(calibrator, method='intra_train', last=None, qmap=None,
@@ -78,7 +93,13 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
 
     @wf._xarray2numpy
     @wf._calibrate_worker(calibrator, worker_corrections)
-    def calculate_correlation(data, return_='all', **kwargs):
+    def calculate_correlation(data, return_='all', blur=False, **kwargs):
+
+        data[(data<0)|(data>6)] = np.nan
+        if blur:
+            for i, image in enumerate(data):
+                image[~mask] = np.nan
+                data[i] = blur_gauss(image, sigma=2.0, truncate=4.0)
 
         data = data.reshape(-1, 8192, 128)
         wnan = np.isnan(np.sum(data, axis=0))
@@ -113,7 +134,7 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
                   'intra_train_ttc': {'trainId': 1, 'train_data': 16*512*128}}
 
 
-    arr = calibrator.data.copy()
+    arr = calibrator.data.copy(deep=False)
     npulses = np.unique(arr.pulseId.values).size
 
     if norm_xgm:
@@ -148,7 +169,7 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
 
     # do the actual calculation
     if 'intra_train' in method:
-        t, corf, qv = calculate_correlation(arr[0], return_='all',
+        t, corf, qv = calculate_correlation(np.ones(arr[0].shape), return_='all',
                 **kwargs)
 
         dim = arr.get_axis_num("train_data")
@@ -187,6 +208,7 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
 
         dset = dset.persist()
         progress(dset)
+        del arr, out
 
         savdict = {"q(nm-1)": dset.qv.values,
                    "t(s)": dset.t_cor.values,

@@ -15,8 +15,7 @@ class Calibrator:
     mask = np.ones((16, 512, 128), 'bool')
 
 
-    def __init__(self, run, last_train=10_000, pulses_per_train=100,
-            first_cell=1, train_step=1, pulse_step=1, flatfield_run_number=None,
+    def __init__(self, run, cell_ids, train_ids, flatfield_run_number=None,
             dark_run_number=None, mask=None, is_dark=False, is_flatfield=False,
             apply_internal_mask=False, dropletize=False, stripes=None,
             baseline=False, asic_commonmode=False, subshape=(64, 64),
@@ -28,13 +27,11 @@ class Calibrator:
         self.is_dark = is_dark
         #: bool: True if data is a flatfield run
         self.is_flatfield = is_flatfield
-        self.last_train = last_train
-        self.pulses_per_train = pulses_per_train
-        self.first_cell = first_cell
-        self.train_step = train_step
-        self.pulse_step = pulse_step
         #: tuple: asic (or subasic) shape for asic commonmode. Default (64, 64)
         self.subshape = subshape
+
+        self.cell_ids = cell_ids
+        self.train_ids = train_ids
 
         # corrections applied on Dask lazy array
         self.corrections = {'dark_subtraction': False,
@@ -185,7 +182,7 @@ class Calibrator:
         self.__stripes = stripes
 
 
-    def _get_data(self, train_step=None, last_train=None):
+    def _get_data(self):
         """Read data and apply corrections
 
         Args:
@@ -208,7 +205,8 @@ class Calibrator:
         self.is_proc = True if len(arr.dims) == 5 else False
         print(f"Is processed: {self.is_proc}")
 
-        arr = self._slice(arr, train_step, last_train)
+        arr = self._slice(arr)
+
         arr = arr.stack(train_pulse=('trainId', 'pulseId'))
         arr = arr.transpose('train_pulse', ...)
 
@@ -223,37 +221,26 @@ class Calibrator:
 
         arr = arr.stack(pixels=('module', 'dim_0', 'dim_1'))
         arr = arr.transpose('train_pulse', 'pixels')
+
         self.data = arr
-        return arr
 
 
-    def _slice(self, arr, train_step=None, last_train=None):
+    def _slice(self, arr):
         """Select trains and pulses."""
-        train_step = train_step if bool(train_step) else self.train_step
-        last_train = last_train if bool(last_train) else self.last_train
-
-        train_slice = slice(0, last_train, train_step)
-        pulse_slice = slice(self.first_cell,
-                            (self.first_cell +
-                                self.pulses_per_train * self.pulse_step),
-                            self.pulse_step)
-        if self.is_proc:
-            arr = arr[..., train_slice, pulse_slice]
-        else:
-            # drop gain map
-            arr = arr[:, 0, ..., train_slice, pulse_slice]
+        arr = arr.sel(trainId=self.train_ids).sel(pulseId=self.cell_ids)
+        if not self.is_proc:
             arr = arr.rename({'dim_1': 'dim_0',
                               'dim_2': 'dim_1'})
             # slicing dark should not be neccessary as xarrays
             # broadcasting takes coords into account
-            if self.avr_dark is not None:
-                # first cell has been cut when averaging dark
-                dark_slice = slice(
-                        self.first_cell - 1,
-                        (self.first_cell - 1 +
-                            self.pulses_per_train * self.pulse_step),
-                        self.pulse_step)
-                self.avr_dark = self.avr_dark[..., dark_slice]
+            #if self.avr_dark is not None:
+            #    # first cell has been cut when averaging dark
+            #    dark_slice = slice(
+            #            self.first_cell - 1,
+            #            (self.first_cell - 1 +
+            #                self.pulses_per_train * self.pulse_step),
+            #            self.pulse_step)
+            #    self.avr_dark = self.avr_dark[..., dark_slice]
         return arr
 
 

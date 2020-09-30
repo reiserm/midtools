@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 import xarray as xr
+import dask
 import bottleneck  as bn
 from functools import wraps
 
@@ -9,9 +10,11 @@ def _xarray2numpy(func):
     @wraps(func)
     def wrapper(data, *args, **kwargs):
         if isinstance(data, np.ndarray):
-            pass
-        elif isinstance(data, xr.DataArray):
-            data = np.array(data.data)
+            data = data.astype('float32')
+        elif isinstance(data, xr.core.dataarray.DataArray):
+            data = data.values.astype('float32')
+        elif isinstance(data, dask.array.core.Array):
+            data = data.values.astype('float32')
         else:
             raise(ValueError(f"Data type {type(data)} not understood."))
         return func(data, *args, **kwargs)

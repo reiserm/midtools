@@ -18,12 +18,26 @@ from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
 from . import worker_functions as wf
+from pyFAI.azimuthalIntegrator import AzimuthalIntegrator
+from pyFAI.detectors import Detector
 
 import pdb
 
+
+class Agipd1m(Detector):
+
+    def __init__(self, *args, **kwargs):
+
+        super().__init__(pixel1=2e-4, pixel2=2e-4, max_shape=(8192,128),)
+        self.shape = self.dim = (8192,128)
+        self.aliases = ['Agipd1m']
+        self.IS_CONTIGUOUS = False
+        self.mask = np.zeros(self.shape)
+
 def azimuthal_integration(calibrator, method='average', last=None,
     mask=None, setup=None, geom=None, max_trains=10_000, chunks=None,
-    savname=None, **kwargs):
+    savname=None, sample_detector=8, photon_energy=9, center=(512, 512),
+    distortion_array=None, **kwargs):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
@@ -65,25 +79,35 @@ def azimuthal_integration(calibrator, method='average', last=None,
     @wf._calibrate_worker(calibrator, worker_corrections)
     def integrate_azimuthally(data, returnq=True):
 
-        wnan = np.isnan(data)
-        q, I = ai.integrate1d(data.reshape(8192,128),
-                              500,
-                              mask=~(mask.reshape(8192,128).astype('bool'))
-                                    | wnan.reshape(8192,128),
-                              unit='q_nm^-1', dummy=np.nan)
+        # detector = Agipd1m()
+        # detector.set_pixel_corners(distortion_array)
+        # ai = AzimuthalIntegrator(detector=detector, dist=sample_detector)
+        # ai.setFit2D(sample_detector * 1000, center[0], center[1])
+        # ai.wavelength = 12.39 / photon_energy * 1e-10
+        data = data.reshape(16, 512, 128)
+        data[(data<0)|(data>6)] = np.nan
+        ai = AzimuthalIntegrator(
+            dist=sample_detector,
+            pixel1=geom.pixel_size,
+            pixel2=geom.pixel_size,
+            poni1=center[1] * geom.pixel_size,
+            poni2=center[0] * geom.pixel_size,
+        )
+
+        ai.wavelength = 12.39 / photon_energy * 1e-10
+        data_2d = geom.position_modules_fast(data)[0]
+        wnan = np.isnan(data_2d)
+        q, I = ai.integrate1d(data_2d, 500, mask=wnan, unit='q_nm^-1', dummy=np.nan)
         if returnq:
             return q, I
         else:
-            return I
+            return I.astype('float32')
 
     t_start = time()
 
     if chunks is None:
         chunks = {'average': {'train_pulse': 8, 'pixels': 16*512*128},
-                  'single': {'train_pulse': 128, 'pixels': 128*512}}
-
-    # get the azimuthal integrator
-    ai = copy.copy(setup.ai)
+                  'single': {'train_pulse': 32, 'pixels': 16*128*512}}
 
     # take maximum 200 trains for the simple average
     # skip trains to get max_trains trains
@@ -93,7 +117,7 @@ def azimuthal_integration(calibrator, method='average', last=None,
     elif method == 'single':
         train_step = (last // max_trains) + 1
 
-    arr = calibrator.data.copy()
+    arr = calibrator.data.copy(deep=False)
     npulses = np.unique(arr.pulseId.values).size
 
     print("Start computation", flush=True)
@@ -125,21 +149,16 @@ def azimuthal_integration(calibrator, method='average', last=None,
         arr = arr.chunk(chunks['single'])
 
         dim = arr.get_axis_num("pixels")
-        q = integrate_azimuthally(arr[0])[0]
+        q = integrate_azimuthally(np.ones(arr[0].shape))[0]
         arr = da.apply_along_axis(integrate_azimuthally, dim,
             arr.data, dtype='float32', shape=(500,), returnq=False)
 
-        arr = arr.persist()
-        progress(arr)
-
-        savdict = {"q(nm-1)":q, "soq-pr":arr.compute()}
+        res = arr.persist()
         del arr
+        progress(res)
 
-        if savname is None:
-            return savdict
-        else:
-            savname = f'./{savname}_Iqpr_{int(time())}.pkl'
-            pickle.dump(savdict, open(savname, 'wb'))
+        savdict = {"q(nm-1)":q, "soq-pr":res}
+        return savdict
     else:
         raise(ValueError(f"Method {method} not understood. \
                         Choose between 'average' and 'single'."))
