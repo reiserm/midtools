@@ -24,6 +24,9 @@ import dask.array as da
 from dask.distributed import Client, progress, LocalCluster
 from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
+from dask.distributed import TimeoutError
+from distributed.comm.core import CommClosedError
+from functools import wraps
 
 import Xana
 from Xana import Setup
@@ -41,6 +44,19 @@ from .plotting import Interpreter
 
 import pdb
 
+def _exception_handler(max_attempts=3):
+    def restart(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            attempt = 0
+            while attempt <= max_attempts:
+                try:
+                    return func(*args, **kwargs)
+                except (IOError, OSError, TimeoutError, CommClosedError) as e:
+                    print(f'Restart due to {str(e)}. Attempt {attempt}')
+                    attempt += 1
+        return wrapper
+    return restart
 
 class Dataset:
 
@@ -50,8 +66,9 @@ class Dataset:
     def __init__(self, run_number, setupfile, analysis=None,
             first_train=0, last_train=1e6, pulses_per_train=500,
             dark_run_number=None, train_file='train-file.npy', pulse_file='pulse-file.npy',
-            first_cell=2, train_step=1, pulse_step=1, is_dark=False, localcluster=False,
-            is_flatfield=False, flatfield_run_number=None, out_dir='./', **kwargs):
+            first_cell=130, train_step=1, pulse_step=1, is_dark=False, localcluster=False,
+            is_flatfield=False, flatfield_run_number=None, out_dir='./', file_identifier=None,
+            **kwargs):
         """Dataset object to analyze MID datasets on Maxwell.
 
         Args:
@@ -206,6 +223,7 @@ class Dataset:
         self.h5_structure = self._make_h5structure()
         #: str: HDF5 file name.
         self.file_name = None
+        self.file_identifier = file_identifier
 
         #: Calibrator: Calibrator instance for data pre-processing set by _compute_meta
         self._calibrator = None
@@ -500,18 +518,18 @@ class Dataset:
     def _get_cell_ids(self, train_idx=0):
         source = 'MID_DET_AGIPD1M-1/DET/{}CH0:xtdf'
         i = 0
-        while i < 10:
-            for module in range(16):
+        while i < 500:
+            for module in range(0, 16, 2):
                 try:
                     s = source.format(module)
                     tid, train_data = self.run.select(s,
                             'image.pulseId').train_from_index(train_idx)
                     cell_ids = train_data[s]['image.pulseId']
-                    return np.array(cell_ids)
-                except KeyError:
+                    return np.array(cell_ids).flatten()
+                except (KeyError, ValueError):
                     pass
             i += 1
-            train_idx += 1
+            train_idx += 10
 
         raise ValueError("Unable to determine pulse ids. Probably the data "
                          "source was not available.")
@@ -558,8 +576,8 @@ class Dataset:
                 log_directory='./dask_log/',
                 local_directory='/scratch/',
                 nanny=True,
-                death_timeout=30,
-                walltime="01:00:00",
+                death_timeout=30*10,
+                walltime="0:40:00",
                 interface='ib0',
                 name='MIDtools',
             )
@@ -590,16 +608,19 @@ class Dataset:
         else:
             ftype = 'analysis'
 
-        # check existing files and determine counter
-        existing = os.listdir(self.out_dir)
-        search_str = (f"(?<=r{self.run_number:04}-{ftype})"
-                      ".*\d{3,}(?=\.h5)")
+        if self.file_identifier is None:
+            # check existing files and determine counter
+            existing = os.listdir(self.out_dir)
+            search_str = (f"(?<=r{self.run_number:04}-{ftype})"
+                          ".*\d{3,}(?=\.h5)")
 
-        counter = map(re.compile(search_str).search, existing)
-        counter = filter(lambda x: bool(x), counter)
-        counter = list(map(lambda x: int(x[0][-3:]), counter))
+            counter = map(re.compile(search_str).search, existing)
+            counter = filter(lambda x: bool(x), counter)
+            counter = list(map(lambda x: int(x[0][-3:]), counter))
 
-        identifier = max(counter) + 1 if len(counter) else 0
+            identifier = max(counter) + 1 if len(counter) else 0
+        else:
+            identifier = self.file_identifier
 
         # depricated include last and first
         # if self.is_dark or self.is_flatfield:
@@ -624,7 +645,8 @@ class Dataset:
             except OSError as e:
                 print(str(e))
                 print("Incrementing counter")
-                identifier += 1
+                if self.identifier is None:
+                    identifier += 1
 
         with open(self.setupfile) as f:
             setup_pars = yaml.load(f, Loader=yaml.FullLoader)
@@ -725,7 +747,6 @@ class Dataset:
                 'complete_train_ids': complete_train_ids,
                 'all_train_ids': all_trains}
 
-        self._write_to_h5(data, 'META')
 
         # initialize the calibrator (data broker)
         self._calibrator = Calibrator(self.run,
@@ -737,7 +758,8 @@ class Dataset:
                                       is_flatfield=self.is_flatfield,
                                       flatfield_run_number=self.flatfield_run_number,
                                       **self._calib_opt)
-        return True
+
+        return self._write_to_h5(data, 'META')
 
 
     def _compute_diagnostics(self):
@@ -762,8 +784,7 @@ class Dataset:
                     data = data.sel(trainId=self.train_ids)
                 arr['/'.join((source, key))] = data
 
-        self._write_to_h5(arr, 'DIAGNOSTICS')
-        return True
+        return self._write_to_h5(arr, 'DIAGNOSTICS')
 
 
     def _compute_saxs(self):
@@ -786,8 +807,7 @@ class Dataset:
                 **saxs_opt)
 
         if out['soq-pr'].shape[0] == (self.ntrains*self.pulses_per_train):
-            self._write_to_h5(out, 'SAXS')
-            return True
+            return self._write_to_h5(out, 'SAXS')
         else:
             return False
 
@@ -812,8 +832,7 @@ class Dataset:
         out = correlate(self._calibrator, **xpcs_opt)
 
         if out['corf'].shape[0] == self.ntrains:
-            self._write_to_h5(out, 'XPCS')
-            return True
+            return self._write_to_h5(out, 'XPCS')
         else:
             return False
 
@@ -832,16 +851,15 @@ class Dataset:
         img2d = self.agipd_geom.position_modules_fast(out['average'])[0]
         out.update({'image2d': img2d})
 
-        self._write_to_h5(out, 'FRAMES')
-        return True
+        return self._write_to_h5(out, 'FRAMES')
 
 
     def _compute_dark(self):
         """Averaging darks."""
 
         dark_opt = dict(axis='train',
-                        first_train=self.first_train_idx,
-                        last_train=self.last_train_idx,)
+                trainIds=self.train_ids,
+                max_trains=len(self.train_ids))
         dark_opt.update(self._dark_opt)
         # we need to remove the options for masking before passing the dict
         # to the average method
@@ -864,8 +882,8 @@ class Dataset:
         """Process flatfield."""
 
         flatfield_opt = dict(axis='train',
-                             first_train=self.first_train_idx,
-                             last_train=self.last_train_idx)
+                             trainIds=self.train_ids,
+                             max_trains=len(self.train_ids))
         flatfield_opt.update(self._flatfield_opt)
 
         # we need to remove the options for masking before passing the dict
@@ -922,8 +940,10 @@ class Dataset:
                         else:
                             f.create_dataset(keyh5, data=data, compression="gzip",
                                     chunks=True,)
+            return True
         else:
             warnings.warn('Results not saved. Filename not specified')
+            return output
 
 
     def merge_files(self, subset=None, delete_file=False):
@@ -1008,7 +1028,7 @@ def _get_parser():
             )
     parser.add_argument(
             '-dr',
-            '--dark-run',
+            '--dark-run-number',
             type=int,
             help='Dark run number.',
             default=None,
@@ -1106,10 +1126,18 @@ def _get_parser():
         required=False,
         help="Use dasks LocalCluster to run midtools locally (default False)",
     )
+    parser.add_argument(
+        '--file-identifier',
+        default=None,
+        type=int,
+        nargs='?',
+        required=False,
+        help="Identifier at file ending. Default None.",
+    )
     return parser
 
-
-def _submit_slurm_job(run, args):
+@_exception_handler(max_attempts=3)
+def _submit_slurm_job(run, args, test=False):
     args = dict(args)
     job_dir = args.pop('job_dir', './jobs')
     job_dir = os.path.abspath(job_dir)
@@ -1126,7 +1154,7 @@ def _submit_slurm_job(run, args):
 
     print(f"Generating sbatch jobs for run: {run}")
 
-    if not os.path.exists(job_dir):
+    if not os.path.exists(job_dir) and not test:
         os.mkdir(job_dir)
 
     TEMPLATE="""#!/bin/bash
@@ -1135,9 +1163,10 @@ def _submit_slurm_job(run, args):
 #SBATCH --error={job_file}.err
 #SBATCH --partition=upex
 #SBATCH --exclusive
-#SBATCH --time 01:00:00
+#SBATCH --time 00:40:00
 
 source /gpfs/exfel/data/scratch/reiserm/mid-proteins/.proteins/bin/activate
+echo "SLURM_JOB_ID           $SLURM_JOB_ID"
 type midtools
 
 ulimit -n 4096
@@ -1165,10 +1194,13 @@ exit
 
     print(f"Generating and submitting sbatch for job {job_name}")
 
-    with open(job_file, "w") as f:
-        f.write(job)
+    if not test:
+        with open(job_file, "w") as f:
+            f.write(job)
 
-    os.system(f"sbatch {job_file}")
+        os.system(f"sbatch {job_file}")
+    else:
+        print(job)
 
 
 def run_single(run_number, setupfile, analysis, **kwargs):

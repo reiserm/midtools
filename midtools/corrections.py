@@ -229,6 +229,7 @@ class Calibrator:
         """Select trains and pulses."""
         arr = arr.sel(trainId=self.train_ids).sel(pulseId=self.cell_ids)
         if not self.is_proc:
+            arr = arr.isel(dim_0=0)
             arr = arr.rename({'dim_1': 'dim_0',
                               'dim_2': 'dim_1'})
             # slicing dark should not be neccessary as xarrays
@@ -270,7 +271,7 @@ class Calibrator:
         """Convert adus to photon counts."""
         arr = np.floor(
             (arr + .5*self.adu_per_photon) / self.adu_per_photon)
-        arr = arr.where(arr >= 0, other=0)
+        arr = arr.where(arr >= 0, other=-1).fillna(-1).astype('int32')
         return arr
 
 

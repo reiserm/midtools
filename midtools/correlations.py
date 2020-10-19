@@ -93,13 +93,13 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
 
     @wf._xarray2numpy
     @wf._calibrate_worker(calibrator, worker_corrections)
-    def calculate_correlation(data, return_='all', blur=False, **kwargs):
+    def calculate_correlation(data, return_='all', blur=True, **kwargs):
 
         data[(data<0)|(data>6)] = np.nan
         if blur:
             for i, image in enumerate(data):
                 image[~mask] = np.nan
-                data[i] = blur_gauss(image, sigma=2.0, truncate=4.0)
+                data[i] = blur_gauss(image, sigma=3.0, truncate=4.0)
 
         data = data.reshape(-1, 8192, 128)
         wnan = np.isnan(np.sum(data, axis=0))

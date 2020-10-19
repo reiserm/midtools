@@ -20,6 +20,10 @@ from Xana.XpcsAna.pyxpcs3 import pyxpcs
 from Xana.Xfit.fitg2global import G2
 from Xana.Xfit.fit_basic import fit_basic
 
+import dask.array as da
+
+from .correlations import convert_ttc
+
 import pdb
 
 
@@ -367,16 +371,18 @@ def add_colorbar(ax, vec, label=None, cmap='magma', discrete=False,
     cb.ax.invert_yaxis()
     cb.ax.set_in_layout(True)
 
+
 class Interpreter:
     """Class to explore MID datasets.
     """
-    def __init__(self, datasets, metadata=None, geom=None, max_len=100,
+    def __init__(self, datasets, metadata=None, geom=None, mask=None, max_len=100,
             **kwargs):
         self.datasets = datasets
         self.metadata = metadata
         self.run = None, 0
         self.xgm = None
         self.geom = geom
+        self.mask = mask
         self.pulses = None
         self.trains = None
         self.image = None
@@ -527,7 +533,7 @@ class Interpreter:
     @_run_to_filename
     def load_images(self, filename):
         keysh5 = ["average/intensity",
-                "average/variance"]
+                  "average/variance"]
 
         args = ['frames', 'variance']
         out = {arg: None for arg in args}
@@ -538,14 +544,16 @@ class Interpreter:
                     out[arg] = data
                     setattr(self, arg, data)
 
-        return list(out.values())[0]
+        return list(out.values())
 
 
     def plot_images(self, run, index=0, vmin=None, vmax=None, log=True):
         """Plot average image and some frames"""
 
         self.run = run, index
-        frames = self.load_images(run, index=index).reshape(-1, 16, 512, 128)
+        frames = self.load_images(run, index=index)[0].reshape(-1, 16, 512, 128)
+        if self.mask is not None:
+            frames[:, ~self.mask] = np.nan
         avr = frames.mean(0)
         avr[avr <= 0] = 1e-3
 
@@ -566,6 +574,8 @@ class Interpreter:
         ax_main.set_title('average trains')
 
         for i, (ax, frame) in enumerate(zip(subax, frames)):
+            if self.mask is not None:
+                frame[~self.mask] = np.nan
             if self.geom is not None:
                 slc = slice(400,-400)
                 frame = self.geom.position_modules_fast(frame)[0][slc, slc]
@@ -874,8 +884,8 @@ class Interpreter:
             if var == "azI":
                 qI, I, trains = self.load_azimuthal_intensity(run, index)
                 dset = dset.assign_coords({"qI": qI})
-                dset["azI"] = (["trainId", "pulseId", "qI"],
-                                I.reshape(*xgm.shape, -1))
+                dset = dset.assign({"azI": (["trainId", "pulseId", "qI"],
+                                I.reshape(*xgm.shape, -1))})
             elif var == "g2":
                 t, qv, g2, ttc, trains = self.load_correlation_functions(run, index)
                 dset = dset.assign_coords({ "t_cor": t, "qv": qv,})
@@ -895,11 +905,31 @@ class Interpreter:
         if "azI" in dset and "g2" in dset:
             dset['g2I'] = (dset['azI'][..., np.abs(dset.qI - dset.qv).argmin('qI')]
                            .mean('pulseId'))
-
         return dset
 
 
+    @staticmethod
+    def recalculate_g2(dset, pulses=None):
+        t = dset.t1
+        qv = dset.qv
+        if pulses is None:
+            pulses = np.arange(t.size)
+        t = t[pulses]
 
+        dset = dset.isel(t1=pulses, t2=pulses, t_cor=pulses[:-1])
+        if 'trainId' in dset.coords:
+            ttc = dset["ttc"].stack(meas=("trainId", "qv"), data=("t1", "t2"))
+        else:
+            ttc = dset["ttc"].stack(data=("t1", "t2"))
 
+        g2 = da.apply_along_axis(convert_ttc, 1, ttc,
+                dtype='float32', shape=(t.size,))
+        if 'trainId' in dset.coords:
+            g2 = g2.reshape(dset.trainId.size, qv.size, t.size).swapaxes(1, 2)
+            dset = dset.update({'g2': (('trainId', 't_cor', 'qv'), g2[:,1:])})
+        else:
+            g2 = g2.reshape(qv.size, t.size).swapaxes(0, 1)
+            dset = dset.update({'g2': (('t_cor', 'qv'), g2[1:])})
 
+        return dset
 

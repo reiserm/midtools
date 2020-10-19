@@ -43,7 +43,9 @@ def average(calibrator, trainIds=None, max_trains=10, chunks=None, axis='train_p
         arr = arr.transpose(axis, ..., 'pixels')
     if len(axisl) == 2:
         axis = 'train_pulse'
+        arr = arr.unstack('train_pulse')
         arr = arr.sel(trainId=trainIds[:max_trains])
+        arr = arr.stack(train_pulse=('trainId', 'pulseId'))
 
     if chunks is None:
         chunks = {axis: 32}
