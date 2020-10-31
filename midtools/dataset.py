@@ -653,7 +653,8 @@ class Dataset:
 
         # attributes to save in copied setupfile
         attrs = ['datdir', 'is_dark', 'dark_run_number', 'run_number',
-                 'pulses_per_train', 'is_flatfield', 'flatfield_run_number',]
+                 'pulses_per_train', 'pulse_step', 'is_flatfield',
+                 'flatfield_run_number',]
         setup_pars.update({attr: getattr(self, attr) for attr in attrs})
         setup_pars['analysis'] = self.analysis
 
@@ -665,6 +666,8 @@ class Dataset:
             yaml.dump(setup_pars, f)
 
         self.setupfile = new_setupfile
+        print(f'Filename: {self.file_name}')
+        print(f'Setupfile: {self.setupfile}')
 
 
     def compute(self, create_file=True):
@@ -779,9 +782,9 @@ class Dataset:
             for key in sources[source]:
                 data = self.run.get_array(source, key)
                 if len(data.dims) == 2:
-                    data = data.sel(trainId=self.train_ids)[:, :len(self.cell_ids)]
+                    data = data.sel(trainId=self.train_ids, method='nearest')[:, :len(self.cell_ids)]
                 elif len(data.dims) == 1:
-                    data = data.sel(trainId=self.train_ids)
+                    data = data.sel(trainId=self.train_ids, method='nearest')
                 arr['/'.join((source, key))] = data
 
         return self._write_to_h5(arr, 'DIAGNOSTICS')
