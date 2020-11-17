@@ -1,6 +1,9 @@
 import pdb
+
 # standard python packages
 import numpy as np
+import numba
+from numba import prange
 import scipy.integrate as integrate
 import scipy.ndimage as ndimage
 from time import time
@@ -30,19 +33,20 @@ from . import worker_functions as wf
 
 
 def ttc_to_g2_ufunc(ttc, dims, time=None):
-    return  xarray.apply_ufunc(
-                    ttc_to_g2,
-                    ttc,
-                    input_core_dims=[dims],
-                    kwargs={'time': time},
-                    dask='parallelized',
-                    output_dtypes=[float],)
+    return xarray.apply_ufunc(
+        ttc_to_g2,
+        ttc,
+        input_core_dims=[dims],
+        kwargs={"time": time},
+        dask="parallelized",
+        output_dtypes=[float],
+    )
 
 
 def convert_ttc(ttc):
     ttc = ttc.reshape(int(np.sqrt(ttc.size)), -1)
     g2 = ttc_to_g2(ttc)
-    return g2[:,1]
+    return g2[:, 1]
 
 
 def blur_gauss(U, sigma=2.0, truncate=4.0):
@@ -51,16 +55,107 @@ def blur_gauss(U, sigma=2.0, truncate=4.0):
     V[np.isnan(U)] = 0
     VV = ndimage.gaussian_filter(V, sigma=sigma, truncate=truncate)
 
-    W = 0*U.copy() + 1
+    W = 0 * U.copy() + 1
     W[np.isnan(U)] = 0
     WW = ndimage.gaussian_filter(W, sigma=sigma, truncate=truncate)
 
     return VV / WW
 
 
-def correlate(calibrator, method='intra_train', last=None, qmap=None,
-    mask=None, setup=None, q_range=None, save_ttc=False, h5filename=None,
-    norm_xgm=False, chunks=None, **kwargs):
+def mask_rolling(data, windows=None):
+    """Identifies bad pixels based on the rolling average over time.
+
+    Args:
+        data (np.ndarray): data to be used for masking.
+        window (list): list of integers with window size for running average.
+    """
+
+    def running_mean(x, N):
+        cumsum = np.cumsum(np.insert(x, 0, 0))
+        return (cumsum[N:] - cumsum[:-N]) / float(N)
+
+    def movingaverage(values, window):
+        weights = np.repeat(1.0, window) / window
+        sma = np.convolve(values, weights, "valid")
+        return sma
+
+    if windows is None:
+        windows = [2, 4, 8, 16]
+
+    nt, s = data.shape
+    data = data.reshape(nt, -1)
+
+    good_pixels = np.ones(data.shape[1])
+    nuniq = np.unique(data).size
+    if nuniq == 1:
+        return good_pixels.astype("bool").reshape(s)
+    for N in windows:
+        roll = np.apply_along_axis(lambda x, N: running_mean(x, N), 0, data, N)
+        roll = roll.mean(0).round(3)
+        vals, invs, cnts = np.unique(roll, return_counts=True, return_inverse=True)
+        inds = np.asarray(
+            [np.where(cnts == x)[0][0] for x in np.sort(cnts)[-nuniq + 1 :]]
+        )
+        pixels = np.asarray([1 if x == i else 0 for x in invs for i in inds])
+        pixels = pixels.reshape(-1, nuniq - 1).sum(1)
+        good_pixels *= pixels
+    return good_pixels.astype("bool").reshape(s)
+
+
+def update_rois(data, rois, doplot=False):
+
+    for i in range(len(rois)):
+        roi = rois[i]
+        npix = len(roi)
+        pixels = mask_rolling(data[:, roi])
+        rois[i] = rois[i][pixels]
+        if doplot:
+            figure()
+            pcolors = sns.color_palette("crest", pixels.size)
+            for ip, p in enumerate(rois[i]):
+                plot(data[:, p], "o", color=pcolors[ip])
+    return rois
+
+
+@numba.jit(parallel=True, nopython=True)
+def update_rois_beta(data, rois, rng=(-0.5, 2)):
+    def calc_beta(c):
+        n = c.shape[0]
+        ind = np.sum(c >= 0, 0)
+        ind = ind == n
+        s = np.sum(c, 0)
+        s1 = np.sum(c == 1, 0)
+        s0 = np.sum(c == 0, 0)
+
+        beta = s0 / s1 - n / s
+        beta[~ind] = -2
+        return beta
+
+    for i in prange(len(rois)):
+        roi = rois[i]
+        beta = calc_beta(data[:, roi])
+
+        rois[i] = rois[i][(beta > rng[0]) & (beta < rng[1])]
+        if len(rois[i]) == 0:
+            rois[i] = np.array([0])
+
+    return rois
+
+
+def correlate(
+    calibrator,
+    method="intra_train",
+    last=None,
+    qmap=None,
+    mask=None,
+    setup=None,
+    q_range=None,
+    save_ttc=False,
+    h5filename=None,
+    norm_xgm=False,
+    chunks=None,
+    **kwargs,
+):
     """Calculate XPCS correlation functions of a run using dask.
 
     Args:
@@ -89,56 +184,67 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
             * 'corf': the xpcs correlation function
     """
 
-    worker_corrections = ('asic_commonmode', 'cell_commonmode', 'dropletize')
+    worker_corrections = ("asic_commonmode", "cell_commonmode", "dropletize")
 
     @wf._xarray2numpy
     @wf._calibrate_worker(calibrator, worker_corrections)
-    def calculate_correlation(data, return_='all', blur=True, **kwargs):
+    def calculate_correlation(data, return_="all", blur=False, **kwargs):
 
-        data[(data<0)|(data>6)] = np.nan
+        #         data[(data<0)|(data>6)] = np.nan
         if blur:
             for i, image in enumerate(data):
                 image[~mask] = np.nan
                 data[i] = blur_gauss(image, sigma=3.0, truncate=4.0)
 
-        data = data.reshape(-1, 8192, 128)
-        wnan = np.isnan(np.sum(data, axis=0))
-        xpcs_mask = mask_2d & ~wnan.reshape(8192,128)
-
-        rois = [np.where((qmap_2d>qi) & (qmap_2d<qf) & xpcs_mask) for qi,qf in
-            zip(qarr[:-1],qarr[1:])]
+        data = data.reshape(-1, 16 * 512 * 128)
+        valid = (data >= 0).all(0)
+        rois = [
+            np.where(
+                (qmap.flatten() > qi) & (qmap.flatten() < qf) & mask.flatten() & valid
+            )[0]
+            for qi, qf in zip(qarr[:-1], qarr[1:])
+        ]
+        # rois = update_rois_beta(data, rois);
+        rois = [np.unravel_index(x, (16 * 512, 128)) for x in rois]
 
         # get only the q-bins in range
-        qv = qarr[:len(rois)] + (qarr[1] - qarr[0])/2.
+        qv = qarr[: len(rois)] + (qarr[1] - qarr[0]) / 2.0
 
-        out = pyxpcs(data, rois, mask=xpcs_mask, nprocs=1, verbose=False,
-                **kwargs)
+        out = pyxpcs(
+            data.reshape(-1, 16 * 512, 128),
+            rois,
+            mask=valid.reshape(16 * 512, 128),
+            nprocs=1,
+            verbose=False,
+            **kwargs,
+        )
 
-        if method == 'intra_train':
-            corf = out['corf']
-            t = corf[1:,0]
-            corf = corf[1:,1:]
-        elif method == 'intra_train_ttc':
-            corf = np.dstack(out['twotime_corf'].values()).T
-            t = out['twotime_xy']
+        if method == "intra_train":
+            corf = out["corf"]
+            t = corf[1:, 0]
+            corf = corf[1:, 1:]
+        elif method == "intra_train_ttc":
+            corf = np.dstack(out["twotime_corf"].values()).T
+            t = out["twotime_xy"]
 
-        if return_ == 'all':
+        if return_ == "all":
             return t, corf, qv
-        elif return_ == 'corf':
-            return corf.astype('float32')
-        elif return_ == 'ttc':
+        elif return_ == "corf":
+            return corf.astype("float32")
+        elif return_ == "ttc":
             pass
 
     if chunks is None:
-        chunks = {'intra_train': {'trainId': 1, 'train_data': 16*512*128},
-                  'intra_train_ttc': {'trainId': 1, 'train_data': 16*512*128}}
-
+        chunks = {
+            "intra_train": {"trainId": 1, "train_data": 16 * 512 * 128},
+            "intra_train_ttc": {"trainId": 1, "train_data": 16 * 512 * 128},
+        }
 
     arr = calibrator.data.copy(deep=False)
     npulses = np.unique(arr.pulseId.values).size
 
     if norm_xgm:
-        with h5py.File(h5filename, 'r') as f:
+        with h5py.File(h5filename, "r") as f:
             xgm = f["pulse_resolved/xgm/energy"][:]
         xgm = xgm[:last, :npulses]
         xgm = xgm / xgm.mean(1)[:, None]
@@ -147,75 +253,86 @@ def correlate(calibrator, method='intra_train', last=None, qmap=None,
 
     arr = arr.unstack()
     trainId = arr.trainId
-    arr = arr.stack(train_data=('pulseId', 'module', 'dim_0', 'dim_1'))
+    arr = arr.stack(train_data=("pulseId", "module", "dim_0", "dim_1"))
     arr = arr.chunk(chunks[method])
-    npulses = arr.shape[1] // (16*512*128)
+    npulses = arr.shape[1] // (16 * 512 * 128)
 
-    if 'nsteps' in q_range:
-        qarr = np.linspace(q_range['q_first'],
-                           q_range['q_last'],
-                           q_range['nsteps'])
-    elif 'qwidth' in q_range:
-        qarr = np.arange(q_range['q_first'],
-                         q_range['q_last'],
-                         q_range['qwidth'])
+    if "nsteps" in q_range:
+        qarr = np.linspace(q_range["q_first"], q_range["q_last"], q_range["nsteps"])
+    elif "qwidth" in q_range:
+        qarr = np.arange(q_range["q_first"], q_range["q_last"], q_range["qwidth"])
     else:
-        raise ValueError("Could not define q-values. "
-                         "q_range not defined properly: "
-                         f"{q_range}")
-
-    qmap_2d = qmap.reshape(16*512,128)
-    mask_2d = mask.reshape(16*512,128)
+        raise ValueError(
+            "Could not define q-values. " "q_range not defined properly: " f"{q_range}"
+        )
 
     # do the actual calculation
-    if 'intra_train' in method:
-        t, corf, qv = calculate_correlation(np.ones(arr[0].shape), return_='all',
-                **kwargs)
+    if "intra_train" in method:
+        t, corf, qv = calculate_correlation(
+            np.ones(arr[0].shape), return_="all", **kwargs
+        )
 
         dim = arr.get_axis_num("train_data")
-        out = da.apply_along_axis(calculate_correlation, dim, arr.data,
-            dtype='float32', shape=corf.shape, return_='corf', **kwargs)
+        out = da.apply_along_axis(
+            calculate_correlation,
+            dim,
+            arr.data,
+            dtype="float32",
+            shape=corf.shape,
+            return_="corf",
+            **kwargs,
+        )
 
-        if 'ttc' in method:
+        if "ttc" in method:
             dset = xarray.Dataset(
-                    {
-                        "ttc": (["trainId", "qv", "t1", "t2"], out),
-                        },
-                    coords={
-                        "trainId": trainId,
-                        "t1": t,
-                        "t2": t,
-                        "qv": qv,
-                        },
-                    )
-            g2 = da.apply_along_axis(convert_ttc, 1,
-                    dset["ttc"].stack(meas=("trainId", "qv"), data=("t1", "t2")),
-                    dtype='float32', shape=(t.size,))
+                {
+                    "ttc": (["trainId", "qv", "t1", "t2"], out),
+                },
+                coords={
+                    "trainId": trainId,
+                    "t1": t,
+                    "t2": t,
+                    "qv": qv,
+                },
+            )
+            g2 = da.apply_along_axis(
+                convert_ttc,
+                1,
+                dset["ttc"].stack(meas=("trainId", "qv"), data=("t1", "t2")),
+                dtype="float32",
+                shape=(t.size,),
+            )
             g2 = g2.reshape(dset.trainId.size, qv.size, t.size).swapaxes(1, 2)
             dset = dset.assign_coords(t_cor=t[1:])
-            dset = dset.assign(g2=(("trainId", "t_cor", "qv"), g2[:,1:]))
+            dset = dset.assign(g2=(("trainId", "t_cor", "qv"), g2[:, 1:]))
         else:
             dset = xarray.Dataset(
-                    {
-                        "g2": (["trainId", "t_cor", "qv"], out),
-                        },
-                    coords={
-                        "trainId": trainId,
-                        "t_cor": t,
-                        "qv": qv,
-                        },
-                    )
+                {
+                    "g2": (["trainId", "t_cor", "qv"], out),
+                },
+                coords={
+                    "trainId": trainId,
+                    "t_cor": t,
+                    "qv": qv,
+                },
+            )
 
         dset = dset.persist()
         progress(dset)
         del arr, out
 
-        savdict = {"q(nm-1)": dset.qv.values,
-                   "t(s)": dset.t_cor.values,
-                   "corf": dset.get('g2', None),
-                   "ttc": dset.get('ttc', None)}
+        savdict = {
+            "q(nm-1)": dset.qv.values,
+            "t(s)": dset.t_cor.values,
+            "corf": dset.get("g2", None),
+            "ttc": dset.get("ttc", None),
+        }
         return savdict
     else:
-        raise(ValueError(f"Method {method} not understood. "
-                         "Choose between 'intra_train' and 'intra_train_ttc."))
+        raise (
+            ValueError(
+                f"Method {method} not understood. "
+                "Choose between 'intra_train' and 'intra_train_ttc."
+            )
+        )
     return
