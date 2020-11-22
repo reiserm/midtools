@@ -20,8 +20,9 @@ from dask.diagnostics import ProgressBar
 import pdb
 
 
-def average(calibrator, last_train=None, chunks=None, axis='train_pulse',
-            **kwargs):
+def average(
+    calibrator, trainIds=None, max_trains=10, chunks=None, axis="train_pulse", **kwargs
+):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
@@ -29,44 +30,47 @@ def average(calibrator, last_train=None, chunks=None, axis='train_pulse',
     """
 
     axisl = []
-    if 'train' in axis:
-        axisl.append('trainId')
-    if 'pulse' in axis:
-        axisl.append('pulseId')
+    if "train" in axis:
+        axisl.append("trainId")
+    if "pulse" in axis:
+        axisl.append("pulseId")
 
-    arr = calibrator.data.copy()
-    npulses = np.unique(arr.pulseId.values).size
+    arr = calibrator.data.copy(deep=False)
 
     if len(axisl) == 1:
         axis = axisl[0]
-        arr = arr.unstack('train_pulse')
-        arr = arr[..., arr.trainId <= arr.trainId[last_train-1], :]
-        arr = arr.transpose(axis, ..., 'pixels')
+        arr = arr.unstack("train_pulse")
+        arr = arr.sel(trainId=trainIds[:max_trains], method="nearest")
+        arr = arr.transpose(axis, ..., "pixels")
     if len(axisl) == 2:
-        axis = 'train_pulse'
-        arr = arr[:last_train * npulses]
+        axis = "train_pulse"
+        arr = arr.unstack("train_pulse")
+        arr = arr.sel(trainId=trainIds[:max_trains], method="nearest")
+        arr = arr.stack(train_pulse=("trainId", "pulseId"))
 
     if chunks is None:
-        chunks = {axis: 128}
+        chunks = {axis: 32}
 
-    if calibrator.worker_corrections['asic_commonmode']:
+    if calibrator.worker_corrections["asic_commonmode"]:
         arr = calibrator._asic_commonmode_xarray(arr)
         if len(axisl) == 1:
-            arr = arr.unstack('train_pulse')
-            arr = arr.stack(pixels=('module', 'dim_0', 'dim_1'))
-            arr = arr.transpose(axis, ..., 'pixels')
+            arr = arr.unstack("train_pulse")
+            arr = arr.stack(pixels=("module", "dim_0", "dim_1"))
+            arr = arr.transpose(axis, ..., "pixels")
 
-    if calibrator.worker_corrections['dropletize']:
+    if calibrator.worker_corrections["dropletize"]:
         arr = calibrator._dropletize(arr)
 
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)
 
     average = arr.mean(axis, skipna=True, keepdims=True).persist()
-    average = np.squeeze(average.values.reshape(-1, 16, 512, 128))
+    progress(average)
+    average = average.compute().values.reshape(-1, 16, 512, 128)
 
     variance = arr.var(axis, skipna=True, keepdims=True).persist()
     progress(variance)
-    variance = np.squeeze(variance.values.reshape(-1, 16, 512, 128))
+    variance = variance.compute().values.reshape(-1, 16, 512, 128)
 
-    return {'average': average, 'variance': variance}
+    del arr
+    return {"average": average, "variance": variance}

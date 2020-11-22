@@ -22,9 +22,19 @@ from . import worker_functions as wf
 import pdb
 
 
-def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
-        max_trains=10_000, chunks=None, hist_range=None, nbins=None,
-        savname=None, **kwargs):
+def statistics(
+    calibrator,
+    last=None,
+    mask=None,
+    setup=None,
+    geom=None,
+    max_trains=10_000,
+    chunks=None,
+    hist_range=None,
+    nbins=None,
+    savname=None,
+    **kwargs,
+):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
@@ -57,15 +67,14 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
               * 'centers': bin centers
     """
 
-    worker_corrections = ('asic_commonmode')
+    worker_corrections = "asic_commonmode"
 
     @wf._xarray2numpy
     @wf._calibrate_worker(calibrator, worker_corrections)
     def statistics_worker(data, return_centers=False):
 
         ind = np.isfinite(data)
-        counts, edges = np.histogram(data[ind], bins=nbins,
-                range=hist_range)
+        counts, edges = np.histogram(data[ind], bins=bins)
 
         if return_centers:
             centers = edges[:-1] + (edges[1] - edges[0]) / 2
@@ -76,34 +85,34 @@ def statistics(calibrator, last=None, mask=None, setup=None, geom=None,
     t_start = time()
 
     if hist_range is None:
-        if calibrator.corrections.pop('dropletize', False):
-            hist_range = (-.5, 10.5)
+        if calibrator.corrections.pop("dropletize", False):
+            hist_range = (-0.5, 10.5)
         else:
             hist_range = (-200, 800)
     if nbins is None:
-        if calibrator.corrections.pop('dropletize', False):
+        if calibrator.corrections.pop("dropletize", False):
             nbins = 11
         else:
             nbins = 500
+    bins = np.linspace(*hist_range, nbins)
 
     if chunks is None:
-        chunks = {'train_pulse': 128, 'pixels': 128*512}
+        chunks = {"train_pulse": 32, "pixels": 16 * 128 * 512}
 
-    arr = calibrator.data.copy()
-    npulses = np.unique(arr.pulseId.values).size
+    arr = calibrator.data.copy(deep=False)
 
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)
-    centers = np.linspace(*hist_range, num=nbins+1)
-    centers = centers[:-1] + (centers[1] - centers[0]) / 2
+    centers = bins[:-1] + (bins[1] - bins[0]) / 2
 
     dim = arr.get_axis_num("pixels")
-    arr = da.apply_along_axis(statistics_worker, dim, \
-        arr.data, dtype='float32', shape=(500,))
+    arr = da.apply_along_axis(
+        statistics_worker, dim, arr.data, dtype="float32", shape=(500,)
+    )
 
-    arr = arr.persist()
-    progress(arr)
-
-    savdict = {'centers': centers, 'counts': arr.compute()}
+    res = arr.persist()
+    progress(res)
     del arr
+    res = res.compute()
+    savdict = {"centers": centers, "counts": res}
     return savdict

@@ -18,12 +18,42 @@ from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
 from . import worker_functions as wf
+from pyFAI.azimuthalIntegrator import AzimuthalIntegrator
+from pyFAI.detectors import Detector
 
 import pdb
 
-def azimuthal_integration(calibrator, method='average', last=None,
-    mask=None, setup=None, geom=None, max_trains=10_000, chunks=None,
-    savname=None, **kwargs):
+
+class Agipd1m(Detector):
+    def __init__(self, *args, **kwargs):
+
+        super().__init__(
+            pixel1=2e-4,
+            pixel2=2e-4,
+            max_shape=(8192, 128),
+        )
+        self.shape = self.dim = (8192, 128)
+        self.aliases = ["Agipd1m"]
+        self.IS_CONTIGUOUS = False
+        self.mask = np.zeros(self.shape)
+
+
+def azimuthal_integration(
+    calibrator,
+    method="average",
+    last=None,
+    mask=None,
+    setup=None,
+    geom=None,
+    max_trains=10_000,
+    chunks=None,
+    savname=None,
+    sample_detector=8,
+    photon_energy=9,
+    center=(512, 512),
+    distortion_array=None,
+    **kwargs,
+):
     """Calculate the azimuthally integrated intensity of a run using dask.
 
     Args:
@@ -59,88 +89,70 @@ def azimuthal_integration(calibrator, method='average', last=None,
                 * 'q(nm-1)': the q-values in inverse nanometers
     """
 
-    worker_corrections = ('asic_commonmode', 'dropletize')
+    worker_corrections = ("asic_commonmode", "dropletize")
 
-    @wf._xarray2numpy
+    @wf._xarray2numpy(dtype="int16")
     @wf._calibrate_worker(calibrator, worker_corrections)
-    def integrate_azimuthally(data, returnq=True):
+    def integrate_azimuthally(train_data, integrator=None, returnq=True):
 
-        wnan = np.isnan(data)
-        q, I = ai.integrate1d(data.reshape(8192,128),
-                              500,
-                              mask=~(mask.reshape(8192,128).astype('bool'))
-                                    | wnan.reshape(8192,128),
-                              unit='q_nm^-1', dummy=np.nan)
+        s = (8192, 128)
+        train_data = train_data.reshape(-1, *s)
+        I_v = np.empty((train_data.shape[0], 500))
+        for ip, pulse_data in enumerate(train_data):
+            pyfai_mask = np.isnan(pulse_data) | (pulse_data < 0) | ~mask.reshape(s)
+            q, I = integrator.integrate1d(
+                pulse_data, 500, mask=pyfai_mask, unit="q_nm^-1", dummy=np.nan
+            )
+            I_v[ip] = I
         if returnq:
-            return q, I
+            return q, I_v
         else:
-            return I
+            return I_v.astype("float32")
 
     t_start = time()
 
     if chunks is None:
-        chunks = {'average': {'train_pulse': 8, 'pixels': 16*512*128},
-                  'single': {'train_pulse': 128, 'pixels': 128*512}}
+        chunks = {
+            "single": {"trainId": 1, "train_data": -1},
+        }
 
     # get the azimuthal integrator
     ai = copy.copy(setup.ai)
 
-    # take maximum 200 trains for the simple average
-    # skip trains to get max_trains trains
-    if method == 'average':
-        last = min(200, last)
-        train_step = 1
-    elif method == 'single':
-        train_step = (last // max_trains) + 1
-
-    arr = calibrator.data.copy()
+    arr = calibrator.data.copy(deep=False)
+    arr = arr.unstack()
+    arr = arr.stack(train_data=("pulseId", "module", "dim_0", "dim_1"))
     npulses = np.unique(arr.pulseId.values).size
 
     print("Start computation", flush=True)
-    if method == 'average':
-        # store some single frames
-        last_train_pulse = min(npulses*100, arr.shape[0])
-        frames = arr[:last_train_pulse:npulses*10].values
-        frames = frames.reshape(-1, 16, 512, 128)
+    if method == "single":
+        arr = arr.chunk(chunks["single"])
+        dim = arr.get_axis_num("train_data")
+        q = integrate_azimuthally(np.ones(arr[0].shape), integrator=ai)[0]
+        res = da.apply_along_axis(
+            integrate_azimuthally,
+            dim,
+            arr.data,
+            dtype="float32",
+            shape=(
+                npulses,
+                500,
+            ),
+            returnq=False,
+            integrator=ai,
+        )
 
-        arr = arr.chunk(chunks['average'])
-        arr = arr.mean('train_pulse', skipna=True).persist()
-        progress(arr)
-        arr = arr.values.reshape(16, 512, 128)
-
-        # aziumthal integration
-        q, I = integrate_azimuthally(arr)
-        img2d = geom.position_modules_fast(arr)[0]
-
-        savdict = {"soq":(q,I), "avr2d":img2d, "avr":arr, "frames": frames}
-        del arr, frames
-
-        if savname is None:
-            return savdict
-        else:
-            savname = f'./{savname}_Iq_{int(time())}.pkl'
-            pickle.dump(savdict, open(savname, 'wb'))
-
-    elif method == 'single':
-        arr = arr.chunk(chunks['single'])
-
-        dim = arr.get_axis_num("pixels")
-        q = integrate_azimuthally(arr[0])[0]
-        arr = da.apply_along_axis(integrate_azimuthally, dim,
-            arr.data, dtype='float32', shape=(500,), returnq=False)
-
-        arr = arr.persist()
-        progress(arr)
-
-        savdict = {"q(nm-1)":q, "soq-pr":arr.compute()}
+        res = res.persist()
         del arr
+        progress(res)
+        res = res.reshape(-1, 500)
 
-        if savname is None:
-            return savdict
-        else:
-            savname = f'./{savname}_Iqpr_{int(time())}.pkl'
-            pickle.dump(savdict, open(savname, 'wb'))
+        savdict = {"q(nm-1)": q, "soq-pr": res}
+        return savdict
     else:
-        raise(ValueError(f"Method {method} not understood. \
-                        Choose between 'average' and 'single'."))
-
+        raise (
+            ValueError(
+                f"Method {method} not understood. \
+                        Choose between 'average' and 'single'."
+            )
+        )
