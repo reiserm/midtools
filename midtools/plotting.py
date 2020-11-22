@@ -431,6 +431,8 @@ def add_colorbar(
 class Interpreter:
     """Class to explore MID datasets."""
 
+    FIGSIZE = (4, 3)
+
     def __init__(
         self, datasets, metadata=None, geom=None, mask=None, max_len=100, **kwargs
     ):
@@ -487,8 +489,10 @@ class Interpreter:
     def __repr__(self):
         return self.__str__()
 
-    def sel(self, dataset_index=0, **d):
+    def sel(self, **d):
 
+        if "run" in d:
+            self.run = d["run"]
         if len(d):
             cond = np.ones(len(self.datasets.file))
             for attr, val in d.items():
@@ -1069,6 +1073,10 @@ class Interpreter:
             dset["g2I"] = dset["azI"][..., np.abs(dset.qI - dset.qv).argmin("qI")].mean(
                 "pulseId"
             )
+
+        if self.filtered[self.run] is not None:
+            print("Loaded filtered Dataset", self.run)
+            dset = dset.sel(trainId=self.filtered[self.run])
         return dset
 
     @staticmethod
@@ -1098,10 +1106,21 @@ class Interpreter:
     def _select_filtered(self, *args):
         if self.filtered[self.run] is not None:
             trains = self.load_identifier()[2]
+            ntrains = trains.size
             ind = np.asarray(
                 np.intersect1d(trains, self.filtered[self.run], return_indices=True)[1]
             )
-            return list(map(lambda x: np.array(x)[ind], args))
+            new_args = []
+            for arg in args:
+                arg = np.asarray(arg)
+                s = arg.shape
+                s2 = s[0] // ntrains
+                if s2 > 1:
+                    arg = arg.reshape(ntrains, s2, *s[1:])
+                arg = arg[ind]
+                arg = arg.reshape(ind.size * s2, *s[1:])
+                new_args.append(arg)
+            return new_args
         else:
             return args
 
@@ -1110,63 +1129,75 @@ class Interpreter:
         show=False,
         verbose=False,
         xgm_lower=800,
-        azI_percentiles=[10, 90],
+        azI_percentiles=None,
         azI_nsiqma=3,
         mot_stepsize=50,
         mot_nsteps=2,
         subset=None,
         subsequent=True,
+        **ttc_kws,
     ):
         """Filter trains based on different conditions."""
 
         if subset is None:
             subset = ["xgm", "azI", "sample"]
-        nplots = len(subset)
+        if "ttc" in subset and not "g2" in subset:
+            subset.append("g2")
 
         dset = self.to_xDataset(self.run, subset=subset)
         self.filtered[self.run] = np.unique(dset.trainId.values)
         trainIds = self.filtered[self.run]
         trainIds0 = trainIds.copy()
 
-        mpos = [dset["y"], dset["z"]]
-        mpos = mpos[np.argmax([np.abs(x.min() - x.max()) for x in mpos])]
-        trainIds = np.intersect1d(
-            trainIds,
-            dset.trainId[
-                (mpos > (mpos.min() + mot_nsteps * mot_stepsize / 1000))
-                & (mpos < (mpos.max() - mot_nsteps * mot_stepsize / 1000))
-            ],
-        )
+        if "sample" in subset:
+            mpos = [dset["y"], dset["z"]]
+            mpos = mpos[np.argmax([np.abs(x.min() - x.max()) for x in mpos])]
+            trainIds = np.intersect1d(
+                trainIds,
+                dset.trainId[
+                    (mpos > (mpos.min() + mot_nsteps * mot_stepsize / 1000))
+                    & (mpos < (mpos.max() - mot_nsteps * mot_stepsize / 1000))
+                ],
+            )
 
-        xgm = dset["xgm"].mean("pulseId")
-        test_against = trainIds if subsequent else trainIds0
-        xgm_thres = np.percentile(xgm.sel(trainId=test_against).values.flatten(), 10)
-        xgm_thres = max(xgm_thres, xgm_lower)
-        trainIds = np.intersect1d(trainIds, dset.trainId[(xgm > xgm_thres)])
+        if "xgm" in subset:
+            xgm = dset["xgm"].mean("pulseId")
+            test_against = trainIds if subsequent else trainIds0
+            xgm_thres = np.percentile(
+                xgm.sel(trainId=test_against).values.flatten(), 10
+            )
+            xgm_thres = max(xgm_thres, xgm_lower)
+            trainIds = np.intersect1d(trainIds, dset.trainId[(xgm > xgm_thres)])
 
-        test_against = trainIds if subsequent else trainIds0
-        azI = dset["azI"].mean("pulseId").mean("qI")
-        azI_thres = [
-            np.percentile(azI.sel(trainId=test_against).values.flatten(), x)
-            for x in azI_percentiles
-        ]
-        m = azI.sel(trainId=test_against).mean().values
-        s = azI.sel(trainId=test_against).std().values
-        azI_thres = [m - azI_nsiqma * s, m + azI_nsiqma * s]
-        trainIds = np.intersect1d(
-            trainIds, dset.trainId[(azI > azI_thres[0]) & (azI < azI_thres[1])]
-        )
+        if "azI" in subset:
+            test_against = trainIds if subsequent else trainIds0
+            azI = dset["azI"].mean("pulseId").mean("qI")
+            if bool(azI_percentiles):
+                azI_thres = [
+                    np.percentile(azI.sel(trainId=test_against).values.flatten(), x)
+                    for x in azI_percentiles
+                ]
+            else:
+                m = azI.sel(trainId=test_against).mean().values
+                s = azI.sel(trainId=test_against).std().values
+                azI_thres = [m - azI_nsiqma * s, m + azI_nsiqma * s]
+            trainIds = np.intersect1d(
+                trainIds, dset.trainId[(azI > azI_thres[0]) & (azI < azI_thres[1])]
+            )
 
         self.filtered[self.run] = trainIds
-        self.dset = dset.sel(trainId=trainIds)
 
         if verbose:
-            print(f"Kept {trainIds.size/dset.trainId.size*100:.1f}% of trains.")
+            print(f"Kept {trainIds.size/trainIds0.size*100:.1f}% of trains.")
 
         if show:
             colors = {"all": ["gray", 0.4], "sel": ["tab:red", 0.7]}
             fig, ax = plt.subplots(
-                1, 2, figsize=(8, 4), constrained_layout=True, sharey="row"
+                1,
+                2,
+                figsize=(self.FIGSIZE[0] * 2, self.FIGSIZE[1]),
+                constrained_layout=True,
+                sharey="row",
             )
             axc = np.array(ax)
 
@@ -1203,6 +1234,107 @@ class Interpreter:
                 )
                 a.minorticks_on()
 
+        dset = dset.sel(trainId=trainIds)
+
+        if "ttc" in subset:
+            dset = self.filter_ttc(dset, show=show, **ttc_kws)
+
+        return dset
+
+    def filter_ttc(self, dset, ttc_thres=(0.1, 2), qbin=3, show=False):
+        """Filter data based on TTC values"""
+        measure = (dset["ttc"] > ttc_thres[0]) & (dset["ttc"] < ttc_thres[1])
+        ttc_unfiltered = dset["ttc"].copy(deep=True)
+        dset["ttc"] = dset["ttc"].where(measure)
+
+        if show:
+            fig = plt.figure(
+                figsize=(self.FIGSIZE[0] * 2, self.FIGSIZE[1] * 3),
+                constrained_layout=True,
+            )
+            gs = fig.add_gridspec(6, 2)
+            ax1 = fig.add_subplot(gs[:3, 0])
+            ax2 = fig.add_subplot(gs[3:, 0])
+            ax3 = fig.add_subplot(gs[:2, 1])
+            ax4 = fig.add_subplot(gs[2:4, 1])
+            ax5 = fig.add_subplot(gs[4:, 1])
+
+            qcolors = sns.color_palette("inferno", dset.qv.size)
+            for qi in range(dset.qv.size):
+                dsetq = dset.isel(qv=qi)
+                ax3.hist(dsetq["g2I"], 20, color=qcolors[qi], alpha=0.4, density=True)
+            ax3.set_xlabel("average number photons")
+            ax3.set_ylabel("pdf")
+            ax3.set_xscale("log")
+
+            im = ax2.imshow(
+                dset["ttc"].isel(qv=qbin).mean("trainId"),
+                origin="lower",
+                interpolation="nearest",
+            )
+            ax2.set_xlabel("frame axis 0")
+            ax2.set_ylabel("frame axis 1")
+            ax2.text(
+                0.22,
+                0.92,
+                "w/ contrast sorting",
+                transform=ax2.transAxes,
+                ha="center",
+                bbox={"color": "w"},
+            )
+
+            vmin, vmax = im.get_clim()
+            ax1.imshow(
+                ttc_unfiltered.isel(qv=qbin).mean("trainId"),
+                vmin=vmin,
+                vmax=vmax,
+                origin="lower",
+                interpolation="nearest",
+            )
+            ax1.set_xlabel("frame axis 0")
+            ax1.set_ylabel("frame axis 1")
+            ax1.text(
+                0.22,
+                0.92,
+                "w/o contrast sorting",
+                transform=ax1.transAxes,
+                ha="center",
+                bbox={"color": "w"},
+            )
+
+            ind = np.tril_indices(ttc_unfiltered[0, 0, 0].size, k=-1)
+            colors = sns.color_palette("inferno", len(ind[0]))
+            ttcflat = np.array(ttc_unfiltered)[..., ind[0], ind[1]]
+
+            ax5.hist(
+                np.ravel(ttcflat),
+                64,
+                range=(0.1, 10),
+                color="tab:blue",
+                alpha=0.7,
+                density=True,
+            )
+            ax5.set_xlabel("TTC values")
+            ax5.set_ylabel("pdf")
+
+            ttcmin = ttcflat.min(-1)
+            ttcmax = ttcflat.max(-1)
+            ttcmean = ttcflat.mean(-1)
+            for data, marker, color in zip(
+                [ttcmin, ttcmax], ["o", "x"], ["tab:red", "k"]
+            ):
+                ax4.scatter(dset["g2I"], data, alpha=0.3, marker=marker, color=color)
+
+            ax4.set_xscale("log")
+            ax4.set_yscale("symlog")
+            ax4.set_xlabel("average number photons")
+            ax4.set_ylabel("max(TTC)")
+
+            for a in [ax1, ax2, ax3, ax4, ax5]:
+                a.minorticks_on()
+
+        return dset
+
 
 class AnaFile:
     ANA_FMT = "r{:04d}-analysis_{:03d}.h5"
@@ -1221,6 +1353,12 @@ class AnaFile:
         self._get_run_number()
         self._get_counter()
         self._get_setupfile()
+
+    def __str__(self):
+        return self.fullname
+
+    def __repr__(self):
+        return f"AnaFile('{self.fullname}')"
 
     def _get_run_number(
         self,

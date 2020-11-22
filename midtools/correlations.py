@@ -30,6 +30,7 @@ from dask_jobqueue import SLURMCluster
 from dask.diagnostics import ProgressBar
 
 from . import worker_functions as wf
+from .masking import mask_radial, mask_asics
 
 
 def ttc_to_g2_ufunc(ttc, dims, time=None):
@@ -142,6 +143,23 @@ def update_rois_beta(data, rois, rng=(-0.5, 2)):
     return rois
 
 
+def update_mask(mask, data, rmap):
+
+    average = data.mean(0)
+    variance = data.var(0)
+    mask = mask_radial(average, rmap, mask)
+
+    mask = mask_radial(
+        variance / average ** 2,
+        rmap,
+        mask=mask,
+        lower_quantile=0.01,
+    )
+
+    mask = mask_asics(mask)
+    return mask
+
+
 def correlate(
     calibrator,
     method="intra_train",
@@ -186,24 +204,30 @@ def correlate(
 
     worker_corrections = ("asic_commonmode", "cell_commonmode", "dropletize")
 
-    @wf._xarray2numpy
+    @wf._xarray2numpy(dtype="float32")
     @wf._calibrate_worker(calibrator, worker_corrections)
     def calculate_correlation(data, return_="all", blur=False, **kwargs):
 
-        #         data[(data<0)|(data>6)] = np.nan
         if blur:
             for i, image in enumerate(data):
                 image[~mask] = np.nan
                 data[i] = blur_gauss(image, sigma=3.0, truncate=4.0)
 
         data = data.reshape(-1, 16 * 512 * 128)
-        valid = (data >= 0).all(0)
-        rois = [
-            np.where(
-                (qmap.flatten() > qi) & (qmap.flatten() < qf) & mask.flatten() & valid
-            )[0]
-            for qi, qf in zip(qarr[:-1], qarr[1:])
-        ]
+        valid = (data >= 0).all(0) & mask.flatten()
+        # valid = update_mask(valid, data, qmap.flatten())
+        # valid = valid.flatten()
+        rois = []
+        bad_qs = []
+        for i, (qi, qf) in enumerate(zip(qarr[:-1], qarr[1:])):
+            roi = np.where((qmap.flatten() > qi) & (qmap.flatten() < qf) & valid)[0]
+            if len(roi) > 100:
+                rois.append(roi)
+            else:
+                roi = np.where((qmap.flatten() > qi) & (qmap.flatten() < qf))[0]
+                rois.append(roi)
+                bad_qs.append(i)
+
         # rois = update_rois_beta(data, rois);
         rois = [np.unravel_index(x, (16 * 512, 128)) for x in rois]
 
@@ -230,6 +254,9 @@ def correlate(
         if return_ == "all":
             return t, corf, qv
         elif return_ == "corf":
+            for bad_q in bad_qs:
+                corf[bad_q] *= 0
+                corf[bad_q] -= 100
             return corf.astype("float32")
         elif return_ == "ttc":
             pass
@@ -258,7 +285,9 @@ def correlate(
     npulses = arr.shape[1] // (16 * 512 * 128)
 
     if "nsteps" in q_range:
-        qarr = np.linspace(q_range["q_first"], q_range["q_last"], q_range["nsteps"])
+        qarr = np.logspace(
+            np.log10(q_range["q_first"]), np.log10(q_range["q_last"]), q_range["nsteps"]
+        )
     elif "qwidth" in q_range:
         qarr = np.arange(q_range["q_first"], q_range["q_last"], q_range["qwidth"])
     else:

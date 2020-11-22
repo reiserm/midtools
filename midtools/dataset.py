@@ -37,7 +37,7 @@ from .correlations import correlate
 from .average import average
 from .statistics import statistics
 from .calibration import Calibrator, _create_mask_from_dark, _create_mask_from_flatfield
-from .masking import mask_radial
+from .masking import mask_radial, mask_asics
 
 from functools import reduce
 
@@ -298,6 +298,7 @@ class Dataset:
                 "/average/variance": [None],
                 "/average/image_2d": [None],
                 "/utility/mask": [None],
+                "/average/train_ids": [None],
             },
             "STATISTICS": {
                 "/pulse_resolved/statistics/centers": [True],
@@ -603,7 +604,7 @@ class Dataset:
         opt = self._slurm_opt
         # nprocs = 72//threads_per_process
         nprocs = opt.pop("nprocs", 1)
-        threads_per_process = opt.pop("cores", 72)
+        threads_per_process = opt.pop("cores", 40)
         if self.is_dark or self.is_flatfield:
             nprocs = 1
         njobs = opt.pop("njobs", min(max(int(self.ntrains / 64), 4), 12))
@@ -617,13 +618,13 @@ class Dataset:
                 queue=opt.get("partition", opt.pop("partition", "exfel")),
                 processes=nprocs,
                 cores=threads_per_process,
-                memory=opt.pop("memory", "768GB"),
+                memory=opt.pop("memory", "400GB"),
                 log_directory="./dask_log/",
                 local_directory="/scratch/",
                 nanny=True,
-                death_timeout=30 * 10,
+                death_timeout=60 * 60,
                 walltime="1:15:00",
-                # interface='ib0',
+                interface="ib0",
                 name="MIDtools",
             )
             self._cluster.scale(nprocs * njobs)
@@ -685,7 +686,7 @@ class Dataset:
             except OSError as e:
                 print(str(e))
                 print("Incrementing counter")
-                if self.identifier is None:
+                if self.file_identifier is None:
                     identifier += 1
 
         with open(self.setupfile) as f:
@@ -914,6 +915,9 @@ class Dataset:
         """Averaging frames."""
 
         frames_opt = dict(axis="pulse", trainIds=self.selected_train_ids, max_trains=10)
+        frames_opt["trainIds"] = frames_opt["trainIds"][
+            :: frames_opt["trainIds"].size // frames_opt["max_trains"]
+        ]
         frames_opt.update(self._frames_opt)
 
         print("Computing frames.")
@@ -922,13 +926,44 @@ class Dataset:
         img2d = self.agipd_geom.position_modules_fast(out["average"])[0]
         out["image2d"] = img2d
 
-        print("Updating mask based on average image")
-        mask = mask_radial(out["average"], self.qmap, self.mask)
-        self.mask = mask
-        self._calibrator.xmask = mask
-        out["mask"] = mask
+        out = self._update_mask(out)
+        out["averaged_trains"] = frames_opt["trainIds"][: out["average"].shape[0]]
 
         return self._write_to_h5(out, "FRAMES")
+
+    def _update_mask(self, frames):
+        """Update the mask based on the average intensity and variance.
+
+        Args:
+            frames (dict): should contain the keys `average` and `variance`.
+        """
+        assert ("average" in frames) and ("variance" in frames)
+
+        print("Updating mask based on average image")
+        print(
+            f"Initially: masked {round((1-self.mask.sum()/self.mask.size)*100,2)}% of all pixels"
+        )
+
+        mask = mask_radial(frames["average"], self.qmap, self.mask)
+        print(f"Average: masked {round((1-mask.sum()/mask.size)*100,2)}% of all pixels")
+
+        mask = mask_radial(
+            frames["variance"].mean(0) / frames["average"].mean(0) ** 2,
+            self.qmap,
+            mask=mask,
+            lower_quantile=0.01,
+        )
+        print(
+            f"Variance: masked {round((1-mask.sum()/mask.size)*100,2)}% of all pixels"
+        )
+
+        mask = mask_asics(mask)
+        print(f"Asics: masked {round((1-mask.sum()/mask.size)*100,2)}% of all pixels")
+
+        self.mask = mask
+        self._calibrator.xmask = mask
+        frames["mask"] = mask
+        return frames
 
     def _compute_dark(self):
         """Averaging darks."""
@@ -1218,7 +1253,7 @@ def _get_parser():
         help="Identifier at file ending. Default None.",
     )
     parser.add_argument(
-        "--first_cell",
+        "--first-cell",
         type=int,
         help="Cell ID of the first AGIPD memory cell with X-rays.",
         required=False,

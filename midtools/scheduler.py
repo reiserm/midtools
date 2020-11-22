@@ -13,6 +13,7 @@ from tqdm import tqdm
 from .dataset import _submit_slurm_job
 
 import shutil
+import yaml
 import threading
 import time
 from datetime import timedelta, datetime
@@ -81,14 +82,18 @@ def get_parser_args(s):
 def get_status(df, jobdir):
     jobs = get_running_jobs()
     for idx, row in df.iterrows():
-        with open(os.path.join(jobdir, row["outfile"])) as f:
-            jobc = f.read()
-        if is_running(row["slurm-id"], jobs):
-            status = "running"
-        elif is_saved(jobc):
-            status = "complete"
+        outfile = os.path.join(jobdir, row["outfile"])
+        if os.path.isfile(outfile):
+            with open(outfile) as f:
+                jobc = f.read()
+            if is_running(row["slurm-id"], jobs):
+                status = "running"
+            elif is_saved(jobc):
+                status = "complete"
+            else:
+                status = "error"
         else:
-            status = "error"
+            status = "unknown"
         df.loc[idx, "status"] = status
     return df
 
@@ -127,45 +132,91 @@ def make_jobtable(jobdir):
     entries["runtime"] = []
     entries["datdir"] = []
 
-    jobf, outf, errf = [
-        list(filter(lambda x: x.endswith(s), os.listdir(jobdir)))
-        for s in ["job", "out", "err"]
-    ]
+    jobf = list(filter(lambda x: x.endswith("job"), os.listdir(jobdir)))
+    jobf = sorted(jobf)
+
     entries.update(
         {
-            "jobfile": sorted(jobf)[: len(outf)],
-            "outfile": sorted(outf),
-            "errfile": sorted(errf),
+            "jobfile": jobf,
+            "outfile": [s + ".out" for s in jobf],
+            "errfile": [s + ".err" for s in jobf],
         }
     )
 
+    jobs = get_running_jobs()
     for jobfile, outfile in zip(entries["jobfile"], entries["outfile"]):
         with open(os.path.join(jobdir, jobfile)) as f:
             jobc = f.read()
         run, args = get_parser_args(jobc)
         entries["run"].append(run)
-        with open(os.path.join(jobdir, outfile)) as f:
-            outc = f.read()
-        entries["file-id"].append(args.get("file-identifier", get_fileid(outc)))
-        entries["datdir"].append(get_datdir(outc))
-
-    jobs = get_running_jobs()
-    for outfile in entries["outfile"]:
-        with open(os.path.join(jobdir, outfile)) as f:
-            jobc = f.read()
-            slurm_id = find_jobid(jobc)
-            entries["slurm-id"].append(slurm_id)
+        outfile = os.path.join(jobdir, outfile)
+        slurm_id = 0
+        t = "PD"
+        datdir = ""
+        file_id = -1
+        if os.path.isfile(outfile):
+            with open(outfile) as f:
+                outc = f.read()
+            file_id = args.get("file-identifier", get_fileid(outc))
+            datdir = get_datdir(outc)
+            slurm_id = find_jobid(outc)
             if slurm_id in jobs.index:
                 t = jobs.loc[slurm_id, "runtime"]
             else:
                 t = "done"
-            entries["runtime"].append(t)
+        entries["file-id"].append(file_id)
+        entries["datdir"].append(datdir)
+        entries["slurm-id"].append(slurm_id)
+        entries["runtime"].append(t)
 
     df = pd.DataFrame(entries)
     df = get_status(df, jobdir)
     df = df.reindex(columns=["status", *df.drop(columns=["status"]).columns])
 
     return df.sort_values(by=["status", "jobfile", "run", "file-id"])
+
+
+def get_tcp(s):
+    out = re.search("tcp://(\d{1,3}\.?){4}:\d{1,6}", s)
+    if bool(out):
+        return out.group(0)
+    return None
+
+
+def log_error(df, jobdir):
+    failed_jobs_file = (
+        Path(jobdir).parent.joinpath("failed-jobs").joinpath("failed-jobs.yml")
+    )
+    if not failed_jobs_file.is_file():
+        failed_jobs_file.touch()
+    with open(failed_jobs_file, "r+") as f:
+        failed = yaml.load(f, Loader=yaml.FullLoader)
+    if not bool(failed):
+        failed = {}
+
+    status = "error"
+    df = df[(df["status"] == status)]
+    for index, row in df.iterrows():
+        fcontent = {}
+        for key in ["job", "out", "err"]:
+            fname = os.path.join(jobdir, row[key + "file"])
+            if os.path.isfile(fname):
+                with open(fname) as f:
+                    fcontent[key] = f.read()
+            else:
+                fcontent[key] = ""
+
+            if key == "err":
+                shutil.copy(fname, failed_jobs_file.parent.joinpath(row[key + "file"]))
+
+        failed[find_jobid(fcontent["out"])] = {
+            "tcp": get_tcp(fcontent["out"]),
+            "errlog": row[key + "file"],
+            "time": datetime.now().strftime("%m/%d/%Y, %H:%M:%S"),
+        }
+
+        with open(failed_jobs_file, "w") as f:
+            yaml.dump(failed, f)
 
 
 def delete_hdf5(run_number, index=None, directory=None):
@@ -206,7 +257,6 @@ def make_analysis_table(
     df,
     jobdir,
 ):
-    df = df.copy()
     df = df[df["status"] == "complete"]
     for i, row in (
         df[df["status"] == "complete"]
@@ -252,7 +302,9 @@ def clean_jobdir(df, jobdir, subset=None, run=None):
         for col in ["jobfile", "outfile", "errfile"]:
             files = df2[col].values
             for f in files:
-                os.remove(os.path.join(jobdir, f))
+                f = os.path.join(jobdir, f)
+                if os.path.isfile(f):
+                    os.remove(f)
 
 
 def merge_files(outfile, filenames, h5_structure, delete_file=False):

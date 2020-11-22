@@ -93,105 +93,59 @@ def azimuthal_integration(
 
     @wf._xarray2numpy(dtype="int16")
     @wf._calibrate_worker(calibrator, worker_corrections)
-    def integrate_azimuthally(data, integrator=None, returnq=True):
-
-        # detector = Agipd1m()
-        # detector.set_pixel_corners(distortion_array)
-        # ai = AzimuthalIntegrator(detector=detector, dist=sample_detector)
-        # ai.setFit2D(sample_detector * 1000, center[0], center[1])
-        # ai.wavelength = 12.39 / photon_energy * 1e-10
-        # data = data.reshape(16, 512, 128)
-        # data[(data<0)|~mask] = np.nan
-
-        # ai = AzimuthalIntegrator(
-        #     dist=sample_detector,
-        #     pixel1=geom.pixel_size,
-        #     pixel2=geom.pixel_size,
-        #     poni1=center[1] * geom.pixel_size,
-        #     poni2=center[0] * geom.pixel_size,
-        # )
-
-        # ai.wavelength = 12.39 / photon_energy * 1e-10
-        # data_2d = geom.position_modules_fast(data)[0]
-        # wnan = np.isnan(data_2d)
-        # q, I = ai.integrate1d(data_2d, 500, mask=wnan, unit="q_nm^-1", dummy=np.nan)
+    def integrate_azimuthally(train_data, integrator=None, returnq=True):
 
         s = (8192, 128)
-        data = data.reshape(s)
-        pyfai_mask = np.isnan(data) | (data < 0) | ~mask.reshape(s)
-        q, I = integrator.integrate1d(
-            data, 500, mask=pyfai_mask, unit="q_nm^-1", dummy=np.nan
-        )
+        train_data = train_data.reshape(-1, *s)
+        I_v = np.empty((train_data.shape[0], 500))
+        for ip, pulse_data in enumerate(train_data):
+            pyfai_mask = np.isnan(pulse_data) | (pulse_data < 0) | ~mask.reshape(s)
+            q, I = integrator.integrate1d(
+                pulse_data, 500, mask=pyfai_mask, unit="q_nm^-1", dummy=np.nan
+            )
+            I_v[ip] = I
         if returnq:
-            return q, I
+            return q, I_v
         else:
-            return I.astype("float32")
+            return I_v.astype("float32")
 
     t_start = time()
 
     if chunks is None:
         chunks = {
-            "average": {"train_pulse": 8, "pixels": 16 * 512 * 128},
-            "single": {"train_pulse": 1, "pixels": 16 * 128 * 512},
+            "single": {"trainId": 1, "train_data": -1},
         }
 
     # get the azimuthal integrator
     ai = copy.copy(setup.ai)
 
-    # take maximum 200 trains for the simple average
-    # skip trains to get max_trains trains
-    if method == "average":
-        last = min(200, last)
-        train_step = 1
-    elif method == "single":
-        train_step = (last // max_trains) + 1
-
     arr = calibrator.data.copy(deep=False)
+    arr = arr.unstack()
+    arr = arr.stack(train_data=("pulseId", "module", "dim_0", "dim_1"))
     npulses = np.unique(arr.pulseId.values).size
 
     print("Start computation", flush=True)
-    if method == "average":
-        # store some single frames
-        last_train_pulse = min(npulses * 100, arr.shape[0])
-        frames = arr[: last_train_pulse : npulses * 10].values
-        frames = frames.reshape(-1, 16, 512, 128)
-
-        arr = arr.chunk(chunks["average"])
-        arr = arr.mean("train_pulse", skipna=True).persist()
-        progress(arr)
-        arr = arr.values.reshape(16, 512, 128)
-
-        # aziumthal integration
-        q, I = integrate_azimuthally(arr)
-        img2d = geom.position_modules_fast(arr)[0]
-
-        savdict = {"soq": (q, I), "avr2d": img2d, "avr": arr, "frames": frames}
-        del arr, frames
-
-        if savname is None:
-            return savdict
-        else:
-            savname = f"./{savname}_Iq_{int(time())}.pkl"
-            pickle.dump(savdict, open(savname, "wb"))
-
-    elif method == "single":
+    if method == "single":
         arr = arr.chunk(chunks["single"])
-
-        dim = arr.get_axis_num("pixels")
+        dim = arr.get_axis_num("train_data")
         q = integrate_azimuthally(np.ones(arr[0].shape), integrator=ai)[0]
-        arr = da.apply_along_axis(
+        res = da.apply_along_axis(
             integrate_azimuthally,
             dim,
             arr.data,
             dtype="float32",
-            shape=(500,),
+            shape=(
+                npulses,
+                500,
+            ),
             returnq=False,
             integrator=ai,
         )
 
-        res = arr.persist()
+        res = res.persist()
         del arr
         progress(res)
+        res = res.reshape(-1, 500)
 
         savdict = {"q(nm-1)": q, "soq-pr": res}
         return savdict
