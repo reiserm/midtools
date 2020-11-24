@@ -1045,7 +1045,7 @@ class Dataset:
                         else:
                             f.create_dataset(
                                 keyh5,
-                                data=data,
+                                data=np.asarray(data),
                                 compression="gzip",
                                 chunks=True,
                             )

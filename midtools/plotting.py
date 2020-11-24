@@ -427,6 +427,12 @@ def add_colorbar(
     cb.ax.invert_yaxis()
     cb.ax.set_in_layout(True)
 
+def norm_ttc_diag(ttc):
+    ttc = np.asarray(ttc)
+    diagval = np.nanmean(np.diag(ttc, k=1))
+    di = np.diag_indices(ttc.shape[0])
+    ttc[di] = diagval
+    return ttc
 
 class Interpreter:
     """Class to explore MID datasets."""
@@ -1270,7 +1276,7 @@ class Interpreter:
             ax3.set_xscale("log")
 
             im = ax2.imshow(
-                dset["ttc"].isel(qv=qbin).mean("trainId"),
+                norm_ttc_diag(dset["ttc"].isel(qv=qbin).mean("trainId")),
                 origin="lower",
                 interpolation="nearest",
             )
@@ -1287,7 +1293,7 @@ class Interpreter:
 
             vmin, vmax = im.get_clim()
             ax1.imshow(
-                ttc_unfiltered.isel(qv=qbin).mean("trainId"),
+                norm_ttc_diag(ttc_unfiltered.where(ttc_unfiltered>0).isel(qv=qbin).mean("trainId")),
                 vmin=vmin,
                 vmax=vmax,
                 origin="lower",
