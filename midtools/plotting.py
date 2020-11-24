@@ -1135,7 +1135,7 @@ class Interpreter:
         mot_nsteps=2,
         subset=None,
         subsequent=True,
-        **ttc_kws,
+        ttc_kws=None,
     ):
         """Filter trains based on different conditions."""
 
@@ -1143,6 +1143,8 @@ class Interpreter:
             subset = ["xgm", "azI", "sample"]
         if "ttc" in subset and not "g2" in subset:
             subset.append("g2")
+        if ttc_kws is None:
+            ttc_kws = {}
 
         dset = self.to_xDataset(self.run, subset=subset)
         self.filtered[self.run] = np.unique(dset.trainId.values)
@@ -1302,9 +1304,11 @@ class Interpreter:
                 bbox={"color": "w"},
             )
 
-            ind = np.tril_indices(ttc_unfiltered[0, 0, 0].size, k=-1)
-            colors = sns.color_palette("inferno", len(ind[0]))
-            ttcflat = np.array(ttc_unfiltered)[..., ind[0], ind[1]]
+            ttcshape = ttc_unfiltered[0, 0, 0].size
+            ind = np.tril_indices(ttcshape, k=-1)
+            ind = np.ravel_multi_index(ind, (ttcshape, ttcshape))
+            ttcflat = ttc_unfiltered.stack(ttcvals=('t1', 't2')).isel(ttcvals=ind)
+            ttcflat = ttcflat.where(ttcflat>0)
 
             ax5.hist(
                 np.ravel(ttcflat),
@@ -1317,16 +1321,16 @@ class Interpreter:
             ax5.set_xlabel("TTC values")
             ax5.set_ylabel("pdf")
 
-            ttcmin = ttcflat.min(-1)
-            ttcmax = ttcflat.max(-1)
-            ttcmean = ttcflat.mean(-1)
+            ttcmin = ttcflat.min('ttcvals')
+            ttcmax = ttcflat.max('ttcvals')
+            ttcmean = ttcflat.mean('ttcvals')
             for data, marker, color in zip(
                 [ttcmin, ttcmax], ["o", "x"], ["tab:red", "k"]
             ):
                 ax4.scatter(dset["g2I"], data, alpha=0.3, marker=marker, color=color)
 
             ax4.set_xscale("log")
-            ax4.set_yscale("symlog")
+            ax4.set_yscale("log")
             ax4.set_xlabel("average number photons")
             ax4.set_ylabel("max(TTC)")
 
