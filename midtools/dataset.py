@@ -207,9 +207,9 @@ class Dataset:
         self.analysis = ["meta", "diagnostics"]
         # reduce computation to _compute_dark or _compute_flatfield
         if is_dark:
-            self.analysis.extend(["statistics", "dark"])
+            self.analysis.extend(["dark"])
         elif is_flatfield:
-            self.analysis.extend(["statistics", "flatfield"])
+            self.analysis.extend(["flatfield"])
         else:
             if analysis is not None:
                 for flag, method in zip(analysis, self.METHODS[2:]):
@@ -1303,8 +1303,8 @@ source /gpfs/exfel/data/scratch/reiserm/mid-proteins/.proteins38/bin/activate
 echo "SLURM_JOB_ID           $SLURM_JOB_ID"
 type midtools
 
-ulimit -n 4096
-ulimit -c unlimited
+# ulimit -n 4096
+# ulimit -c unlimited
 midtools {setupfile} {analysis} -r {run} {midtools_args}
 
 exit

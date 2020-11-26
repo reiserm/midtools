@@ -1348,18 +1348,15 @@ class Interpreter:
 
 class AnaFile:
     ANA_FMT = "r{:04d}-analysis_{:03d}.h5"
+    DARK_FMT = "r{:04d}-dark_{:03d}.h5"
     SETUP_FMT = "r{:04d}-setup_{:03d}.yml"
 
     def __init__(self, filename, dirname=""):
 
-        if isinstance(filename, (tuple, list)):
-            filename = self.ANA_FMT.format(*filename)
-            if os.path.isdir(dirname):
-                filename = os.path.join(dirname, filename)
-
-        self.fullname = os.path.abspath(filename)
-        self.dirname = os.path.dirname(self.fullname)
-        self.basename = os.path.basename(self.fullname)
+        self.FMT = None
+        self.basename = None
+        self.dirname = dirname
+        self.fullname = filename
         self._get_run_number()
         self._get_counter()
         self._get_setupfile()
@@ -1369,6 +1366,26 @@ class AnaFile:
 
     def __repr__(self):
         return f"AnaFile('{self.fullname}')"
+
+    @property
+    def fullname(self):
+        return self.__fullname
+
+    @fullname.setter
+    def fullname(self, var):
+        if isinstance(var, (tuple, list)):
+            for FMT in [self.ANA_FMT, self.DARK_FMT]:
+                filename = os.path.join(self.dirname, FMT.format(*var))
+                if os.path.isfile(filename):
+                    self.FMT = FMT
+        elif isinstance(var, str):
+            filename = var
+        else:
+            raise ValueError(f"Input type {type(var)} of file identifier not understood.")
+        filename = os.path.abspath(filename)
+        self.basename = os.path.basename(filename)
+        self.dirname = os.path.dirname(filename)
+        self.__fullname = filename
 
     def _get_run_number(
         self,
@@ -1383,7 +1400,7 @@ class AnaFile:
     def _get_setupfile(
         self,
     ):
-        self.setupbase = self.basename.replace("analysis", "setup").replace(
+        self.setupbase = self.basename.replace("analysis", "setup").replace('dark', 'setup').replace(
             ".h5", ".yml"
         )
         self.setupfile = os.path.join(self.dirname, self.setupbase)
@@ -1402,7 +1419,7 @@ class AnaFile:
             counter = self.counter
         if path is None:
             path = self.dirname
-        dest.append(os.path.join(path, self.ANA_FMT.format(self.run_number, counter)))
+        dest.append(os.path.join(path, self.FMT.format(self.run_number, counter)))
         if bool(self.setupfile):
             src.append(self.setupfile)
             dest.append(
