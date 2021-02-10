@@ -20,7 +20,7 @@ from Xana.Xfit.fit_basic import fit_basic
 
 import dask.array as da
 
-from .correlations import convert_ttc
+from .correlations import convert_ttc, convert_ttc_err
 
 import pdb
 
@@ -1048,6 +1048,9 @@ class Interpreter:
                 )
             elif var == "g2":
                 t, qv, g2, ttc, trains = self.load_correlation_functions()
+                if g2 is None:
+                    print("Could not load 'g2'.")
+                    continue
                 dset = dset.assign_coords(
                     {
                         "t_cor": t,
@@ -1086,8 +1089,12 @@ class Interpreter:
         return dset
 
     @staticmethod
-    def recalculate_g2(dset, pulses=None):
+    def recalculate_g2(dset, pulses=None, k_baseline=20):
         t = dset.t1
+
+        tril_ind = np.tril_indices(t.size, k=-(t.size-k_baseline))
+        dset['baseline'] = dset['ttc'].isel(t1=tril_ind[0], t2=tril_ind[1]).mean(('t1', 't2'))
+
         qv = dset.qv
         if pulses is None:
             pulses = np.arange(t.size)
@@ -1100,12 +1107,17 @@ class Interpreter:
             ttc = dset["ttc"].stack(data=("t1", "t2"))
 
         g2 = da.apply_along_axis(convert_ttc, 1, ttc, dtype="float32", shape=(t.size,))
+        dg2 = da.apply_along_axis(convert_ttc_err, 1, ttc, dtype="float32", shape=(t.size,))
         if "trainId" in dset.coords:
             g2 = g2.reshape(dset.trainId.size, qv.size, t.size).swapaxes(1, 2)
+            dg2 = dg2.reshape(dset.trainId.size, qv.size, t.size).swapaxes(1, 2)
             dset = dset.update({"g2": (("trainId", "t_cor", "qv"), g2[:, 1:])})
+            dset['dg2'] = (("trainId", "t_cor", "qv"), dg2[:, 1:])
         else:
             g2 = g2.reshape(qv.size, t.size).swapaxes(0, 1)
+            dg2 = dg2.reshape(qv.size, t.size).swapaxes(0, 1)
             dset = dset.update({"g2": (("t_cor", "qv"), g2[1:])})
+            dset['dg2'] = (("t_cor", "qv"), dg2[1:])
 
         return dset
 
@@ -1130,6 +1142,21 @@ class Interpreter:
         else:
             return args
 
+    @staticmethod
+    def _check_dataset_content(subset, dset):
+        d = {'xgm': ['xgm'],
+             'sample': ['z', 'y'],
+             'g2': ['g2'],
+             'azI': ['azI'],
+             'ttc': ['ttc'],
+        }
+        for var in subset:
+            for key in d[var]:
+                if not key in dset:
+                    raise KeyError(f"'{key}' not found in dataset")
+        return True
+
+
     def filter(
         self,
         show=False,
@@ -1153,6 +1180,7 @@ class Interpreter:
             ttc_kws = {}
 
         dset = self.to_xDataset(self.run, subset=subset)
+        self._check_dataset_content(subset, dset)
         self.filtered[self.run] = np.unique(dset.trainId.values)
         trainIds = self.filtered[self.run]
         trainIds0 = trainIds.copy()
@@ -1319,7 +1347,7 @@ class Interpreter:
             ax5.hist(
                 np.ravel(ttcflat),
                 64,
-                range=(0.1, 10),
+                range=ttc_thres,
                 color="tab:blue",
                 alpha=0.7,
                 density=True,
@@ -1355,11 +1383,8 @@ class AnaFile:
 
         self.FMT = None
         self.basename = None
-        self.dirname = dirname
+        self.dirname = os.path.abspath(dirname)
         self.fullname = filename
-        self._get_run_number()
-        self._get_counter()
-        self._get_setupfile()
 
     def __str__(self):
         return self.fullname
@@ -1374,18 +1399,30 @@ class AnaFile:
     @fullname.setter
     def fullname(self, var):
         if isinstance(var, (tuple, list)):
-            for FMT in [self.ANA_FMT, self.DARK_FMT]:
+            for i, FMT in enumerate([self.ANA_FMT, self.DARK_FMT]):
                 filename = os.path.join(self.dirname, FMT.format(*var))
                 if os.path.isfile(filename):
                     self.FMT = FMT
+                    break
+                elif i == 1:
+                    raise FileNotFoundError(f"Run: {var[0]}, ID: {var[1]}, not found in {self.dirname}")
+
         elif isinstance(var, str):
             filename = var
+            base = filename.split('/')[-1]
+            if 'analysis' in base:
+                self.FMT = self.ANA_FMT
+            elif 'dark' in base:
+                self.FMT = self.DARK_FMT
         else:
             raise ValueError(f"Input type {type(var)} of file identifier not understood.")
         filename = os.path.abspath(filename)
         self.basename = os.path.basename(filename)
         self.dirname = os.path.dirname(filename)
         self.__fullname = filename
+        self._get_run_number()
+        self._get_counter()
+        self._get_setupfile()
 
     def _get_run_number(
         self,
@@ -1426,12 +1463,14 @@ class AnaFile:
                 os.path.join(path, self.SETUP_FMT.format(self.run_number, counter))
             )
 
-        for old_file, new_file in zip(src, dest):
+        for i, (old_file, new_file) in enumerate(zip(src, dest)):
             try:
                 if os.path.isfile(new_file) and not overwrite:
                     print(f"Skipping existing file {new_file}.")
                     continue
                 func(old_file, new_file)
+                if i == 0:
+                    self.fullname = new_file
             except FileNotFoundError:
                 print(f"File: {old_file} not found")
 

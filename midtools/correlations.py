@@ -49,6 +49,10 @@ def convert_ttc(ttc):
     g2 = ttc_to_g2(ttc)
     return g2[:, 1]
 
+def convert_ttc_err(ttc):
+    ttc = ttc.reshape(int(np.sqrt(ttc.size)), -1)
+    g2 = ttc_to_g2(ttc)
+    return g2[:, 2]
 
 def blur_gauss(U, sigma=2.0, truncate=4.0):
 

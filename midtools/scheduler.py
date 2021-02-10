@@ -257,6 +257,8 @@ def make_analysis_table(
     df,
     jobdir,
 ):
+    if not len(df):
+        return df
     df = df[df["status"] == "complete"]
     for i, row in (
         df[df["status"] == "complete"]
@@ -274,12 +276,13 @@ def make_analysis_table(
         df.loc[i, "analysis"] = args["analysis"]
         df.loc[i, "proposal"] = get_proposal(outc)
         df.loc[i, "walltime"] = get_walltime(outc)
-    df["analysis"] = df["analysis"].astype(str)
-    df["idx"] = df["idx"].astype("uint16")
-    df["proposal"] = df["proposal"].astype("uint16")
-    cols = ["run", "idx", "analysis"]
-    cols.extend(df.drop(columns=cols).columns)
-    df = df.reindex(columns=cols)
+    if len(df):
+        df["analysis"] = df["analysis"].astype(str)
+        df["idx"] = df["idx"].astype("uint16")
+        df["proposal"] = df["proposal"].astype("uint16")
+        cols = ["run", "idx", "analysis"]
+        cols.extend(df.drop(columns=cols).columns)
+        df = df.reindex(columns=cols)
     df.drop(columns=["jobfile", "outfile", "errfile"], inplace=True)
     return df
 
