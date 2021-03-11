@@ -163,7 +163,8 @@ def make_jobtable(jobdir):
             if slurm_id in jobs.index:
                 t = jobs.loc[slurm_id, "runtime"]
             else:
-                t = "done"
+                mtime = os.path.getmtime(outfile)
+                t = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
         entries["file-id"].append(file_id)
         entries["datdir"].append(datdir)
         entries["slurm-id"].append(slurm_id)
@@ -388,8 +389,12 @@ class Scheduler:
             ) as f:
                 jobc = f.read()
                 #                 print(f"Job_ID: {find_jobid(jobc)}")
-                lastline = list(filter(lambda x: len(x), jobc.split("\n")))[-10:]
+                # lastline = list(filter(lambda x: len(x), jobc.split("\n")))[-10:]
+                lastline = list(filter(lambda x: "[" not in x, jobc.split("\n")))
+                # jobc = re.sub("(^\[\#{0,39}\s*\].*$)*", "", jobc, re.MULTILINE)
+
                 with output:
+                    # print(jobc)
                     print("\n".join(lastline))
 
         jobtable_button = widgets.Button(

@@ -163,6 +163,32 @@ def update_mask(mask, data, rmap):
     mask = mask_asics(mask)
     return mask
 
+def get_qarr(q_range):
+    if "nsteps" in q_range:
+        qarr = np.logspace(
+            np.log10(q_range["q_first"]), np.log10(q_range["q_last"]), q_range["nsteps"]
+        )
+    elif "qwidth" in q_range:
+        qarr = np.arange(q_range["q_first"], q_range["q_last"], q_range["qwidth"])
+    else:
+        raise ValueError(
+            "Could not define q-values. " "q_range not defined properly: " f"{q_range}"
+        )
+    return qarr
+
+def get_xpcs_rois(qarr, qmap, valid):
+    rois = []
+    bad_qs = []
+    for i, (qi, qf) in enumerate(zip(qarr[:-1], qarr[1:])):
+        roi = np.where((qmap.flatten() > qi) & (qmap.flatten() < qf) & valid.flatten())[0]
+        if len(roi) > 100:
+            rois.append(roi)
+        else:
+            roi = np.where((qmap.flatten() > qi) & (qmap.flatten() < qf))[0]
+            rois.append(roi)
+            bad_qs.append(i)
+    return rois, bad_qs
+
 
 def correlate(
     calibrator,
@@ -176,6 +202,7 @@ def correlate(
     h5filename=None,
     norm_xgm=False,
     chunks=None,
+    batch_size=10,
     **kwargs,
 ):
     """Calculate XPCS correlation functions of a run using dask.
@@ -221,16 +248,7 @@ def correlate(
         valid = (data >= 0).all(0) & mask.flatten()
         # valid = update_mask(valid, data, qmap.flatten())
         # valid = valid.flatten()
-        rois = []
-        bad_qs = []
-        for i, (qi, qf) in enumerate(zip(qarr[:-1], qarr[1:])):
-            roi = np.where((qmap.flatten() > qi) & (qmap.flatten() < qf) & valid)[0]
-            if len(roi) > 100:
-                rois.append(roi)
-            else:
-                roi = np.where((qmap.flatten() > qi) & (qmap.flatten() < qf))[0]
-                rois.append(roi)
-                bad_qs.append(i)
+        rois, bad_qs = get_xpcs_rois(qarr, qmap, valid)
 
         # rois = update_rois_beta(data, rois);
         rois = [np.unravel_index(x, (16 * 512, 128)) for x in rois]
@@ -288,16 +306,9 @@ def correlate(
     arr = arr.chunk(chunks[method])
     npulses = arr.shape[1] // (16 * 512 * 128)
 
-    if "nsteps" in q_range:
-        qarr = np.logspace(
-            np.log10(q_range["q_first"]), np.log10(q_range["q_last"]), q_range["nsteps"]
-        )
-    elif "qwidth" in q_range:
-        qarr = np.arange(q_range["q_first"], q_range["q_last"], q_range["qwidth"])
-    else:
-        raise ValueError(
-            "Could not define q-values. " "q_range not defined properly: " f"{q_range}"
-        )
+    # arr = arr.groupby_bins('trainId', bins=)
+
+    qarr = get_qarr(q_range)
 
     # do the actual calculation
     if "intra_train" in method:

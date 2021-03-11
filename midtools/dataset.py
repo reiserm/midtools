@@ -1303,8 +1303,8 @@ source /gpfs/exfel/data/scratch/reiserm/mid-proteins/.proteins38/bin/activate
 echo "SLURM_JOB_ID           $SLURM_JOB_ID"
 type midtools
 
-# ulimit -n 4096
-# ulimit -c unlimited
+ulimit -n 4096
+ulimit -c unlimited
 midtools {setupfile} {analysis} -r {run} {midtools_args}
 
 exit

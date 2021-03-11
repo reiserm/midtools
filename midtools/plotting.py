@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import yaml
 import numpy as np
 from collections import namedtuple
 from functools import wraps
@@ -21,6 +22,7 @@ from Xana.Xfit.fit_basic import fit_basic
 import dask.array as da
 
 from .correlations import convert_ttc, convert_ttc_err
+# from . import Dataset as MidDataset # this causes an ImportError
 
 import pdb
 
@@ -73,7 +75,8 @@ def calc_flux(
     attenuation=1.0,
     photon_energy=9,
     T_lenses=0.586,
-    T_apperture=0.75,
+    T_apperture=0.3,
+    T_cvd_window_feedback=0.75,
     T_air=0.39,
 ):
     """ "Calculate the photon flux at MID
@@ -99,7 +102,7 @@ def calc_flux(
     photon_energy_J = h_planck * 3e8 / wavelength
     energy_J = energy * 1e-6
     photons_per_pules = energy_J / photon_energy_J
-    return photons_per_pules * attenuation * T_lenses * T_apperture * T_air
+    return photons_per_pules * attenuation * T_lenses * T_apperture * T_air * T_cvd_window_feedback
 
 
 def calc_dose(
@@ -112,7 +115,7 @@ def calc_dose(
     thickness=1.5,
     density=1.0,
 ):
-    """ "Calculate the photon flux at MID
+    """Calculate the photon flux at MID
 
     Args:
         flux (float): photon flux per pulse
@@ -463,6 +466,7 @@ class Interpreter:
         self.max_len = max_len
         self.config = None
         self.kwargs = kwargs
+        self.subset = None
         self.filtered = {run: None for run in set(datasets.run)}
 
     def iter_trainids(self, run, subset=None):
@@ -497,6 +501,7 @@ class Interpreter:
 
     def sel(self, **d):
 
+        self.proposal = d.get('proposal', 2718)
         if "run" in d:
             self.run = d["run"]
         if len(d):
@@ -529,6 +534,21 @@ class Interpreter:
                 meta = self.metadata.loc[(self.proposal, self.run)]
                 cols = ["sample", "att (%)"]
                 self.info += "\n".join([col + f": {meta[col]}" for col in cols])
+
+    @property
+    def subset(self):
+        return self.__subset
+
+    @subset.setter
+    def subset(self, subset):
+        if subset is None:
+            self.__subset = ['xgm']
+        elif isinstance(subset, (list, tuple)):
+            self.__subset = subset
+        elif isinstance(subset, str):
+            self.__subset = [subset]
+        else:
+            raise ValueError(f"Subset of type {type(subset)} not understood")
 
     @property
     def dataset_index(self):
@@ -1009,18 +1029,22 @@ class Interpreter:
 
         fig.suptitle(self.info.replace("\n", " | "), fontsize=16)
 
-    def to_xDataset(self, major="g2", subset=["xgm", "g2", "azI", "stats"]):
+    def to_xDataset(self, subset=None, verbose=False):
         """Load data into xarray Dataset"""
 
+        self.subset = subset
         xgm, pulses, trains = self.load_xgm()
         trains = self.load_identifier()[2]
 
         if self.metadata is not None:
             att = self.metadata.loc[(self.proposal, self.run), "att (%)"] / 100.0
+            fel_freq = self.metadata.loc[(self.proposal, self.run), "FEL freq"]
+            sample = self.metadata.loc[(self.proposal, self.run), "sample"]
             # beam_size = self.metadata.loc[run, 'Beam size / um']
-        flux = calc_flux(np.cumsum(xgm, axis=1), attenuation=att)
+
+        flux = calc_flux(xgm, attenuation=att)
         dose = calc_dose(
-            flux,
+            np.cumsum(flux, axis=1),
             npulses=1,
             photon_energy=9,
             absorption=0.57,
@@ -1028,18 +1052,25 @@ class Interpreter:
             beam_size=10,
             density=1.35,
         )
+        avr_dose = dose[:,9] / 10
 
         dset = xr.Dataset(
             {
                 "xgm": (["trainId", "pulseId"], xgm),
                 "dose": (["trainId", "pulseId"], dose),
+                "flux": (["trainId", "pulseId"], flux),
+                "avr_dose": (['trainId'], avr_dose),
+                "avr_dose_rate": (['trainId'], avr_dose * fel_freq),
             },
             coords={
                 "trainId": trains,
                 "pulseId": pulses,
             },
         )
-        for var in subset:
+        # add metadata
+        dset['sample'] = sample
+
+        for var in self.subset:
             if var == "azI":
                 qI, I, trains = self.load_azimuthal_intensity()
                 dset = dset.assign_coords({"qI": qI})
@@ -1060,7 +1091,7 @@ class Interpreter:
                 dset["g2"] = (["trainId", "t_cor", "qv"], g2)
                 dset["intercept"] = dset["g2"].isel(t_cor=0)
                 dset["baseline"] = dset["g2"].sel(t_cor=max(dset.t_cor))
-                if ttc is not None and "ttc" in subset:
+                if ttc is not None and "ttc" in self.subset:
                     dset = dset.assign_coords(
                         {"t1": np.hstack(([0], t)), "t2": np.hstack(([0], t))}
                     )
@@ -1084,7 +1115,8 @@ class Interpreter:
             )
 
         if self.filtered[self.run] is not None:
-            print("Loaded filtered Dataset", self.run)
+            if verbose:
+                print("Loaded filtered Dataset", self.run)
             dset = dset.sel(trainId=self.filtered[self.run])
         return dset
 
@@ -1142,6 +1174,9 @@ class Interpreter:
         else:
             return args
 
+    def reset_filter(self):
+        self.filtered = {run: None for run in set(self.datasets.run)}
+
     @staticmethod
     def _check_dataset_content(subset, dset):
         d = {'xgm': ['xgm'],
@@ -1172,20 +1207,19 @@ class Interpreter:
     ):
         """Filter trains based on different conditions."""
 
-        if subset is None:
-            subset = ["xgm", "azI", "sample"]
-        if "ttc" in subset and not "g2" in subset:
-            subset.append("g2")
+        self.subset = subset
+        if "ttc" in self.subset and not "g2" in self.subset:
+            self.subset.append("g2")
         if ttc_kws is None:
             ttc_kws = {}
 
-        dset = self.to_xDataset(self.run, subset=subset)
-        self._check_dataset_content(subset, dset)
+        dset = self.to_xDataset(subset=self.subset, verbose=verbose)
+        self._check_dataset_content(self.subset, dset)
         self.filtered[self.run] = np.unique(dset.trainId.values)
         trainIds = self.filtered[self.run]
         trainIds0 = trainIds.copy()
 
-        if "sample" in subset:
+        if "sample" in self.subset:
             mpos = [dset["y"], dset["z"]]
             mpos = mpos[np.argmax([np.abs(x.min() - x.max()) for x in mpos])]
             trainIds = np.intersect1d(
@@ -1196,7 +1230,7 @@ class Interpreter:
                 ],
             )
 
-        if "xgm" in subset:
+        if "xgm" in self.subset:
             xgm = dset["xgm"].mean("pulseId")
             test_against = trainIds if subsequent else trainIds0
             xgm_thres = np.percentile(
@@ -1205,7 +1239,8 @@ class Interpreter:
             xgm_thres = max(xgm_thres, xgm_lower)
             trainIds = np.intersect1d(trainIds, dset.trainId[(xgm > xgm_thres)])
 
-        if "azI" in subset:
+        azI = None
+        if "azI" in self.subset:
             test_against = trainIds if subsequent else trainIds0
             azI = dset["azI"].mean("pulseId").mean("qI")
             if bool(azI_percentiles):
@@ -1248,14 +1283,16 @@ class Interpreter:
                     alpha=colors[n][1],
                 )
 
-                ranges.append((0, max(azI.values.flatten())))
-                axc[1].hist(
-                    azI.sel(trainId=tid),
-                    32,
-                    range=ranges[1],
-                    color=colors[n][0],
-                    alpha=colors[n][1],
-                )
+
+                if azI is not None:
+                    ranges.append((0, max(azI.values.flatten())))
+                    axc[1].hist(
+                        azI.sel(trainId=tid),
+                        32,
+                        range=ranges[1],
+                        color=colors[n][0],
+                        alpha=colors[n][1],
+                    )
 
             axc[0].set_title("XGM")
             axc[0].set_xlabel("intensity (µJ)")
@@ -1272,7 +1309,7 @@ class Interpreter:
 
         dset = dset.sel(trainId=trainIds)
 
-        if "ttc" in subset:
+        if "ttc" in self.subset:
             dset = self.filter_ttc(dset, show=show, **ttc_kws)
 
         return dset
@@ -1482,4 +1519,40 @@ class AnaFile:
 
     def setuppars(self):
         if bool(self.setupfile):
-            return MidData._read_setup(self.setupfile)
+            return self._read_setup(self.setupfile)
+
+    @staticmethod
+    def _read_setup(setupfile):
+        """read setup parameters from config file
+
+        Args:
+            setupfile (str): Path to the setup file (YAML).
+
+        Returns:
+            dict: containing the setup parameters read from the setupfile.
+        """
+        with open(setupfile) as file:
+            setup_pars = yaml.load(file, Loader=yaml.FullLoader)
+
+            # include dx and dy in quadrant position
+            if "quadrant_positions" in setup_pars.keys():
+                quad_dict = setup_pars["quadrant_positions"]
+                dx, dy = [quad_dict[x] for x in ["dx", "dy"]]
+                quad_pos = [
+                    (dx + quad_dict[f"q{x}"][0], dy + quad_dict[f"q{x}"][1])
+                    for x in range(1, 5)
+                ]
+                if "geometry" not in setup_pars.keys():
+                    setup_pars["geometry"] = quad_pos
+                else:
+                    print(
+                        "Quadrant positions and geometry file defined by \
+                            setupfile. Loading geometry file..."
+                    )
+
+            # if the key exists in the setup file without any entries, None is
+            # returned. We convert those entries to empty dictionaires.
+            for key, value in list(setup_pars.items()):
+                if value is None:
+                    setup_pars.pop(key)
+            return setup_pars
