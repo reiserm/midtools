@@ -52,6 +52,7 @@ def azimuthal_integration(
     photon_energy=9,
     center=(512, 512),
     distortion_array=None,
+    nqbins=300,
     **kwargs,
 ):
     """Calculate the azimuthally integrated intensity of a run using dask.
@@ -97,11 +98,11 @@ def azimuthal_integration(
 
         s = (8192, 128)
         train_data = train_data.reshape(-1, *s)
-        I_v = np.empty((train_data.shape[0], 500))
+        I_v = np.empty((train_data.shape[0], nqbins))
         for ip, pulse_data in enumerate(train_data):
             pyfai_mask = np.isnan(pulse_data) | (pulse_data < 0) | ~mask.reshape(s)
             q, I = integrator.integrate1d(
-                pulse_data, 500, mask=pyfai_mask, unit="q_nm^-1", dummy=np.nan
+                pulse_data, nqbins, mask=pyfai_mask, unit="q_nm^-1", dummy=np.nan
             )
             I_v[ip] = I
         if returnq:
@@ -111,43 +112,50 @@ def azimuthal_integration(
 
     t_start = time()
 
-    if chunks is None:
-        chunks = {
-            "single": {"trainId": 1, "train_data": -1},
-        }
-
     # get the azimuthal integrator
     ai = copy.copy(setup.ai)
 
     arr = calibrator.data.copy(deep=False)
-    arr = arr.unstack()
-    arr = arr.stack(train_data=("pulseId", "module", "dim_0", "dim_1"))
     npulses = np.unique(arr.pulseId.values).size
 
     print("Start computation", flush=True)
     if method == "single":
-        arr = arr.chunk(chunks["single"])
-        dim = arr.get_axis_num("train_data")
-        q = integrate_azimuthally(np.ones(arr[0].shape), integrator=ai)[0]
-        res = da.apply_along_axis(
+        q = integrate_azimuthally(np.ones((16 * 512, 128)), integrator=ai)[0]
+        darr = xarray.apply_ufunc(
             integrate_azimuthally,
-            dim,
-            arr.data,
-            dtype="float32",
-            shape=(
-                npulses,
-                500,
-            ),
-            returnq=False,
-            integrator=ai,
+            arr,
+            input_core_dims=[["pulseId", "pixels"]],
+            exclude_dims=set(["pixels"]),
+            output_core_dims=[["pulseId", "qI"]],
+            dask_gufunc_kwargs={"output_sizes": {"qI": nqbins}, "allow_rechunk": True},
+            dask="parallelized",
+            vectorize=True,
+            kwargs=dict(returnq=False, integrator=ai),
+            output_dtypes=(np.float32),
         )
+        coords = {"qI": q}
+        darr = darr.assign_coords(coords)
 
-        res = res.persist()
-        del arr
-        progress(res)
-        res = res.reshape(-1, 500)
+        # res = da.apply_along_axis(
+        #     integrate_azimuthally,
+        #     dim,
+        #     arr.data,
+        #     dtype="float32",
+        #     shape=(
+        #         npulses,
+        #         500,
+        #     ),
+        #     returnq=False,
+        #     integrator=ai,
+        # )
 
-        savdict = {"q(nm-1)": q, "soq-pr": res}
+        darr = darr.persist()
+        progress(darr)
+
+        darr = darr.chunk({"trainId": 10, "pulseId": -1, "qI": nqbins})
+        print(darr)
+
+        savdict = {"q(nm-1)": darr.qI, "azimuthal-intensity": darr}
         return savdict
     else:
         raise (

@@ -39,17 +39,15 @@ def average(
 
     if len(axisl) == 1:
         axis = axisl[0]
-        arr = arr.unstack("train_pulse")
         arr = arr.sel(trainId=trainIds[:max_trains], method="nearest")
         arr = arr.transpose(axis, ..., "pixels")
     if len(axisl) == 2:
-        axis = "train_pulse"
-        arr = arr.unstack("train_pulse")
         arr = arr.sel(trainId=trainIds[:max_trains], method="nearest")
         arr = arr.stack(train_pulse=("trainId", "pulseId"))
+        axis = "train_pulse"
 
     if chunks is None:
-        chunks = {axis: 32}
+        chunks = {axis: 1}
 
     if calibrator.worker_corrections["asic_commonmode"]:
         arr = calibrator._asic_commonmode_xarray(arr)
@@ -64,13 +62,18 @@ def average(
     print("Start computation", flush=True)
     arr = arr.chunk(chunks)
 
-    average = arr.mean(axis, skipna=True, keepdims=True).persist()
-    progress(average)
-    average = average.compute().values.reshape(-1, 16, 512, 128)
+    average = arr.mean(axis, skipna=True, keepdims=True)
+    average = average.unstack()
+    average = average.transpose(axis, ...)
 
-    variance = arr.var(axis, skipna=True, keepdims=True).persist()
-    progress(variance)
-    variance = variance.compute().values.reshape(-1, 16, 512, 128)
+    variance = arr.var(axis, skipna=True, keepdims=True)
+    variance = variance.unstack()
+    variance = variance.transpose(axis, ...)
 
-    del arr
-    return {"average": average, "variance": variance}
+    print("Shape of averge data")
+    print(average.shape, variance.shape)
+
+    return {
+        "average": np.asarray(average.compute()),
+        "variance": np.asarray(variance.compute()),
+    }

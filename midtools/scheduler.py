@@ -79,11 +79,11 @@ def get_parser_args(s):
     return int(args.pop("-r")), args
 
 
-def get_status(df, jobdir):
+def get_status(df):
     jobs = get_running_jobs()
     for idx, row in df.iterrows():
-        outfile = os.path.join(jobdir, row["outfile"])
-        if os.path.isfile(outfile):
+        outfile = row["outfile"]
+        if outfile.is_file():
             with open(outfile) as f:
                 jobc = f.read()
             if is_running(row["slurm-id"], jobs):
@@ -133,28 +133,28 @@ def make_jobtable(jobdir):
     entries["datdir"] = []
 
     jobf = list(filter(lambda x: x.endswith("job"), os.listdir(jobdir)))
+    jobf = [Path(jobdir).joinpath(x) for x in jobf]
     jobf = sorted(jobf)
 
     entries.update(
         {
             "jobfile": jobf,
-            "outfile": [s + ".out" for s in jobf],
-            "errfile": [s + ".err" for s in jobf],
+            "outfile": [Path(str(s) + ".out") for s in jobf],
+            "errfile": [Path(str(s) + ".err") for s in jobf],
         }
     )
 
     jobs = get_running_jobs()
     for jobfile, outfile in zip(entries["jobfile"], entries["outfile"]):
-        with open(os.path.join(jobdir, jobfile)) as f:
+        with open(jobfile) as f:
             jobc = f.read()
         run, args = get_parser_args(jobc)
         entries["run"].append(run)
-        outfile = os.path.join(jobdir, outfile)
         slurm_id = 0
         t = "PD"
         datdir = ""
         file_id = -1
-        if os.path.isfile(outfile):
+        if outfile.is_file():
             with open(outfile) as f:
                 outc = f.read()
             file_id = args.get("file-identifier", get_fileid(outc))
@@ -164,14 +164,14 @@ def make_jobtable(jobdir):
                 t = jobs.loc[slurm_id, "runtime"]
             else:
                 mtime = os.path.getmtime(outfile)
-                t = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+                t = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
         entries["file-id"].append(file_id)
         entries["datdir"].append(datdir)
         entries["slurm-id"].append(slurm_id)
         entries["runtime"].append(t)
 
     df = pd.DataFrame(entries)
-    df = get_status(df, jobdir)
+    df = get_status(df)
     df = df.reindex(columns=["status", *df.drop(columns=["status"]).columns])
 
     return df.sort_values(by=["status", "jobfile", "run", "file-id"])
@@ -200,7 +200,7 @@ def log_error(df, jobdir):
     for index, row in df.iterrows():
         fcontent = {}
         for key in ["job", "out", "err"]:
-            fname = os.path.join(jobdir, row[key + "file"])
+            fname = row[key + "file"]
             if os.path.isfile(fname):
                 with open(fname) as f:
                     fcontent[key] = f.read()
@@ -220,44 +220,34 @@ def log_error(df, jobdir):
             yaml.dump(failed, f)
 
 
-def delete_hdf5(run_number, index=None, directory=None):
-    if isinstance(run_number, int):
-        ffile = os.path.join(directory, f"r{run_number:04}-analysis_{index:03}.h5")
-        if os.path.isfile(ffile):
-            os.remove(ffile)
-    elif isinstance(run_number, str):
-        ffile = run_number
-    parts = ffile.split("/")
-    sfname = parts[-1].replace("analysis", "setup").replace("h5", "yml")
-    sf = os.path.join("/".join(parts[:-1]), sfname)
-    if os.path.isfile(sf):
-        os.remove(sf)
-
-
-def handle_failed(df, jobdir, remove=True, resubmit=True, run=None, subset="error"):
+def handle_failed(df, remove=True, resubmit=True, run=None, subset="error"):
     if run is not None:
         df = df[df["run"] == run]
     for i, row in (
         df[df["status"] == subset].drop_duplicates(subset=["run", "file-id"]).iterrows()
     ):
-        with open(os.path.join(jobdir, row["jobfile"])) as f:
+        with open(row["jobfile"]) as f:
             jobc = f.read()
         run_number, args = get_parser_args(jobc)
-        args["job_dir"] = jobdir
+        args["job_dir"] = str(row['jobfile'].parent)
         if remove:
             if not np.isnan(row["file-id"]):
-                anafile = AnaFile(
-                    (int(run_number), int(row["file-id"])), dirname=args["out-dir"]
-                )
-                anafile.remove()
+                try:
+                    anafile = AnaFile(
+                        (int(run_number), int(row["file-id"])), dirname=args["out-dir"]
+                    )
+                    anafile.remove()
+                except FileNotFoundError:
+                    print(f"Tried to delete analysis result for run"
+                           " {int(run_number)}, but file does not exist.")
         if resubmit:
             _submit_slurm_job(run_number, args)
+        if not remove and not resubmit:
+            print(f"Set either 'remove' or 'resubmit' to True. Otherwise "
+                    "handle_failed will do nothing.")
 
 
-def make_analysis_table(
-    df,
-    jobdir,
-):
+def get_completed_analysis_jobs(df):
     if not len(df):
         return df
     df = df[df["status"] == "complete"]
@@ -266,10 +256,10 @@ def make_analysis_table(
         .drop_duplicates(subset=["run", "file-id"])
         .iterrows()
     ):
-        with open(os.path.join(jobdir, row["jobfile"])) as f:
+        with open(row["jobfile"]) as f:
             jobc = f.read()
         run_number, args = get_parser_args(jobc)
-        with open(os.path.join(jobdir, row["outfile"])) as f:
+        with open(row["outfile"]) as f:
             outc = f.read()
         filename = AnaFile(get_h5filename(outc))
         df.loc[i, "filename"] = filename.fullname
@@ -306,7 +296,6 @@ def clean_jobdir(df, jobdir, subset=None, run=None):
         for col in ["jobfile", "outfile", "errfile"]:
             files = df2[col].values
             for f in files:
-                f = os.path.join(jobdir, f)
                 if os.path.isfile(f):
                     os.remove(f)
 
@@ -370,7 +359,6 @@ class Scheduler:
             with output:
                 handle_failed(
                     self.df,
-                    self.jobdir,
                     remove=remove_checkbox.value,
                     resubmit=resubmit_checkbox.value,
                     run=run,
@@ -384,9 +372,7 @@ class Scheduler:
                 s = "outfile"
             elif "job" in print_file_Dropdown.value:
                 s = "jobfile"
-            with open(
-                os.path.join(self.jobdir, self.df.loc[table_index_IntText.value, s])
-            ) as f:
+            with open(self.df.loc[table_index_IntText.value, s]) as f:
                 jobc = f.read()
                 #                 print(f"Job_ID: {find_jobid(jobc)}")
                 # lastline = list(filter(lambda x: len(x), jobc.split("\n")))[-10:]
@@ -398,7 +384,7 @@ class Scheduler:
                     print("\n".join(lastline))
 
         jobtable_button = widgets.Button(
-            description="Update Job Table", layout=Layout(flex="1 0 auto", width="auto")
+            description="Update Job Table / Clear Output", layout=Layout(flex="1 0 auto", width="auto")
         )
         clean_jobdir_button = widgets.Button(
             description="Clean Jobdir", layout=Layout(flex="1 0 auto", width="auto")
@@ -444,7 +430,7 @@ class Scheduler:
             layout=Layout(flex="1 1 0%", width="auto"),
         )
         subset_Dropdown = widgets.Dropdown(
-            options=["error", "complete"],
+            options=["error", "complete", "unknown"],
             value="error",
             description="subset:",
             continuous_update=False,

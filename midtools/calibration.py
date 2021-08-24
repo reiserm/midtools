@@ -247,8 +247,8 @@ class Calibrator:
 
         arr = self._slice(arr)
 
-        arr = arr.stack(train_pulse=("trainId", "pulseId"))
-        arr = arr.transpose("train_pulse", ...)
+        # arr = arr.stack(train_pulse=("trainId", "pulseId"))
+        # arr = arr.transpose("train_pulse", ...)
 
         for correction, options in self.corrections.items():
             if bool(options):
@@ -260,7 +260,8 @@ class Calibrator:
                 print(f"Apply {correction} on workers.")
 
         arr = arr.stack(pixels=("module", "dim_0", "dim_1"))
-        arr = arr.transpose("train_pulse", "pixels")
+        arr = arr.transpose("trainId", "pulseId", "pixels")
+        arr = arr.chunk({"trainId": 1, "pulseId": 1, "pixels": 16 * 512 * 128})
 
         self.data = arr
 

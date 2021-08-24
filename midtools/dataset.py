@@ -9,6 +9,7 @@ import yaml
 import re
 import sys
 import time
+from datetime import datetime
 import numpy as np
 import h5py as h5
 import argparse
@@ -18,7 +19,7 @@ from shutil import copyfile
 from extra_data import RunDirectory
 from extra_geom import AGIPD_1MGeometry
 
-# Dask
+# Dask and xarray
 import dask
 import dask_jobqueue
 import dask.array as da
@@ -62,6 +63,11 @@ def _exception_handler(max_attempts=3):
         return wrapper
 
     return restart
+
+
+def print_now():
+    now = datetime.now()
+    print(now.strftime("%Y-%m-%d: %H-%M-%S"), flush=True)
 
 
 class Dataset:
@@ -290,7 +296,8 @@ class Dataset:
             "XPCS": {
                 "/train_resolved/correlation/q": [True],
                 "/train_resolved/correlation/t": [True],
-                "/train_resolved/correlation/g2": [None],
+                "/train_resolved/correlation/stride": [None],
+                # "/train_resolved/correlation/g2": [None],
                 "/train_resolved/correlation/ttc": [None],
             },
             "FRAMES": {
@@ -623,7 +630,7 @@ class Dataset:
                 local_directory="/scratch/",
                 nanny=True,
                 death_timeout=60 * 60,
-                walltime="1:15:00",
+                walltime="3:00:00",
                 interface="ib0",
                 name="MIDtools",
             )
@@ -734,6 +741,7 @@ class Dataset:
                 print(f"\n{method.upper():-^50}")
                 repetition = 0
                 while repetition < 5:
+                    print_now()
                     success = getattr(self, f"_compute_{method.lower()}")()
                     if success:
                         break
@@ -827,7 +835,7 @@ class Dataset:
         )
 
     def _compute_diagnostics(self):
-        """Read diagnostic data. """
+        """Read diagnostic data."""
         print(f"Read XGM and control sources.")
         sources = {
             "SA2_XTD1_XGM/XGM/DOOCS:output": [
@@ -879,10 +887,17 @@ class Dataset:
         )
         saxs_opt.update(self._saxs_opt)
 
-        print("Compute pulse resolved SAXS")
+        print("Compute pulse resolved SAXS", flush=True)
         out = azimuthal_integration(self._calibrator, method="single", **saxs_opt)
 
-        if out["soq-pr"].shape[0] == (self.ntrains * self.pulses_per_train):
+        if out["azimuthal-intensity"].shape[:2] == (
+            self.ntrains,
+            self.pulses_per_train,
+        ):
+            # out['azimuthal-intensity'].to_netcdf(self.file_name.replace('.h5', '.nc'))
+            # print('wrote NetCDF file')
+            print_now()
+            print("Start writing to HDF5", flush=True)
             return self._write_to_h5(out, "SAXS")
         else:
             return False
@@ -896,17 +911,19 @@ class Dataset:
             setup=self.setup,
             last=self.last_train_idx,
             dt=self.pulse_delay,
-            use_multitau=True,
+            use_multitau=False,
             rebin_g2=False,
             h5filename=self.file_name,
             method="intra_train",
         )
         xpcs_opt.update(self._xpcs_opt)
 
-        print("Compute XPCS correlation funcions.")
+        print("Compute XPCS correlation funcions.", flush=True)
         out = correlate(self._calibrator, **xpcs_opt)
 
-        if out["corf"].shape[0] == self.ntrains:
+        if out["ttc"].shape[0] == self.ntrains:
+            print_now()
+            print("Start writing to HDF5", flush=True)
             return self._write_to_h5(out, "XPCS")
         else:
             return False
@@ -920,7 +937,7 @@ class Dataset:
         ]
         frames_opt.update(self._frames_opt)
 
-        print("Computing frames.")
+        print("Computing frames.", flush=True)
         out = average(self._calibrator, **frames_opt)
 
         img2d = self.agipd_geom.position_modules_fast(out["average"])[0]
@@ -929,6 +946,8 @@ class Dataset:
         out = self._update_mask(out)
         out["averaged_trains"] = frames_opt["trainIds"][: out["average"].shape[0]]
 
+        print_now()
+        print("Start writing to HDF5", flush=True)
         return self._write_to_h5(out, "FRAMES")
 
     def _update_mask(self, frames):
@@ -1048,7 +1067,9 @@ class Dataset:
                                 data=np.asarray(data),
                                 compression="gzip",
                                 chunks=True,
+                                # compression_opts=4,
                             )
+            print("Wrote data to HDF5 file")
             return True
         else:
             warnings.warn("Results not saved. Filename not specified")
@@ -1297,7 +1318,7 @@ def _submit_slurm_job(run, args, test=False):
 #SBATCH --error={job_file}.err
 #SBATCH --partition=upex
 #SBATCH --exclusive
-#SBATCH --time 01:30:00
+#SBATCH --time 03:00:00
 
 source /gpfs/exfel/data/scratch/reiserm/mid-proteins/.proteins38/bin/activate
 echo "SLURM_JOB_ID           $SLURM_JOB_ID"

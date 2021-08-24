@@ -112,5 +112,5 @@ def _cell_commonmode_worker(frames, mask, adu_per_photon=58, window=16):
 def _dropletize_worker(arr, adu_per_photon=58):
     """Convert adus to photon counts."""
     arr = np.floor((arr + 0.5 * adu_per_photon) / adu_per_photon)
-    arr = np.where(arr >= 0, arr, -1)
+    arr = np.where(arr >= 0, arr, -9999)
     return arr

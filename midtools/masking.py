@@ -39,6 +39,7 @@ def mask_radial(arr, rmap, mask=None, upper_quantile=0.99, lower_quantile=0, nbi
     mask = mask.flatten().astype(bool)
     m0 = arr.reshape(-1, 16 * 512 * 128).mean(0)
     rmap = rmap.flatten()
+
     r_min, r_max = rmap.min(), rmap.max()
     rrng = np.logspace(np.log10(r_min), np.log10(r_max), nbins)
 

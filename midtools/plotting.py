@@ -11,6 +11,7 @@ import xarray as xr
 
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
+from matplotlib.lines import Line2D
 import h5py as h5
 import seaborn as sns
 
@@ -22,10 +23,15 @@ from Xana.Xfit.fit_basic import fit_basic
 import dask.array as da
 
 from .correlations import convert_ttc, convert_ttc_err
+
 # from . import Dataset as MidDataset # this causes an ImportError
 
 import pdb
 
+
+def custom_legend(ax, labels, colors):
+    custom_lines = [Line2D([0], [0], color=c, lw=2, ls='-') for c in colors]
+    ax.legend(custom_lines, labels)
 
 def calc_speckle_contrast(pixel_size, speckle_size):
     """Calculate the speckle size in micro meters.
@@ -102,7 +108,14 @@ def calc_flux(
     photon_energy_J = h_planck * 3e8 / wavelength
     energy_J = energy * 1e-6
     photons_per_pules = energy_J / photon_energy_J
-    return photons_per_pules * attenuation * T_lenses * T_apperture * T_air * T_cvd_window_feedback
+    return (
+        photons_per_pules
+        * attenuation
+        * T_lenses
+        * T_apperture
+        * T_air
+        * T_cvd_window_feedback
+    )
 
 
 def calc_dose(
@@ -430,12 +443,37 @@ def add_colorbar(
     cb.ax.invert_yaxis()
     cb.ax.set_in_layout(True)
 
+
 def norm_ttc_diag(ttc):
     ttc = np.asarray(ttc)
     diagval = np.nanmean(np.diag(ttc, k=1))
     di = np.diag_indices(ttc.shape[0])
     ttc[di] = diagval
     return ttc
+
+
+def ttc2tril(ttc):
+    """Convert TTC to triangular matrix"""
+    for k in range(ttc.shape[0]):
+        dia = np.diag(ttc, k)
+        if k == 0:
+            tril = np.ones((ttc.shape[0], len(dia))) * np.nan
+        tril[k, : len(dia)] = dia
+    return tril
+
+
+def ttc2tril_ufunc(ttc):
+    tc = xr.apply_ufunc(
+        ttc2tril,
+        ttc,
+        input_core_dims=[["t1", "t2"]],
+        output_core_dims=[["delay", "t0"]],
+        exclude_dims=set(("t1", "t2")),
+        vectorize=True,
+    )
+    tc = tc.assign_coords({"delay": ttc.t1.values, "t0": ttc.t1.values})
+    return tc
+
 
 class Interpreter:
     """Class to explore MID datasets."""
@@ -501,7 +539,7 @@ class Interpreter:
 
     def sel(self, **d):
 
-        self.proposal = d.get('proposal', 2718)
+        self.proposal = d.get("proposal", 2718)
         if "run" in d:
             self.run = d["run"]
         if len(d):
@@ -542,7 +580,7 @@ class Interpreter:
     @subset.setter
     def subset(self, subset):
         if subset is None:
-            self.__subset = ['xgm']
+            self.__subset = ["xgm"]
         elif isinstance(subset, (list, tuple)):
             self.__subset = subset
         elif isinstance(subset, str):
@@ -795,12 +833,13 @@ class Interpreter:
         keysh5 = [
             "train_resolved/correlation/t",
             "train_resolved/correlation/q",
-            "train_resolved/correlation/g2",
+            # "train_resolved/correlation/g2",
             "/train_resolved/correlation/ttc",
             "identifiers/train_indices",
         ]
 
-        args = ["t_cor", "qv", "g2", "ttc", "train_indices"]
+        # args = ["t_cor", "qv", "g2", "ttc", "train_indices"]
+        args = ["t_cor", "qv", "ttc", "train_indices"]
         out = {arg: None for arg in args}
         with h5.File(self.filename, "r") as f:
             for key, arg in zip(keysh5, out.keys()):
@@ -1052,15 +1091,15 @@ class Interpreter:
             beam_size=10,
             density=1.35,
         )
-        avr_dose = dose[:,9] / 10
+        avr_dose = dose[:, 9] / 10
 
         dset = xr.Dataset(
             {
                 "xgm": (["trainId", "pulseId"], xgm),
                 "dose": (["trainId", "pulseId"], dose),
                 "flux": (["trainId", "pulseId"], flux),
-                "avr_dose": (['trainId'], avr_dose),
-                "avr_dose_rate": (['trainId'], avr_dose * fel_freq),
+                "avr_dose": (["trainId"], avr_dose),
+                "avr_dose_rate": (["trainId"], avr_dose * fel_freq),
             },
             coords={
                 "trainId": trains,
@@ -1068,7 +1107,7 @@ class Interpreter:
             },
         )
         # add metadata
-        dset['sample'] = sample
+        dset["sample"] = sample
 
         for var in self.subset:
             if var == "azI":
@@ -1077,25 +1116,24 @@ class Interpreter:
                 dset = dset.assign(
                     {"azI": (["trainId", "pulseId", "qI"], I.reshape(*xgm.shape, -1))}
                 )
-            elif var == "g2":
-                t, qv, g2, ttc, trains = self.load_correlation_functions()
-                if g2 is None:
+            elif var == "ttc":
+                t, qv, ttc, trains = self.load_correlation_functions()
+                if ttc is None:
                     print("Could not load 'g2'.")
                     continue
+                stride = np.arange(ttc.shape[1])
                 dset = dset.assign_coords(
                     {
                         "t_cor": t,
                         "qv": qv,
+                        "stride": stride,
                     }
                 )
-                dset["g2"] = (["trainId", "t_cor", "qv"], g2)
-                dset["intercept"] = dset["g2"].isel(t_cor=0)
-                dset["baseline"] = dset["g2"].sel(t_cor=max(dset.t_cor))
-                if ttc is not None and "ttc" in self.subset:
-                    dset = dset.assign_coords(
-                        {"t1": np.hstack(([0], t)), "t2": np.hstack(([0], t))}
-                    )
-                    dset["ttc"] = (["trainId", "qv", "t1", "t2"], ttc)
+                # dset["g2"] = (["trainId", "t_cor", "qv"], g2)
+                # dset["intercept"] = dset["g2"].isel(t_cor=0)
+                # dset["baseline"] = dset["g2"].sel(t_cor=max(dset.t_cor))
+                dset = dset.assign_coords({"t1": t, "t2": t})
+                dset["ttc"] = (["trainId", "stride", "qv", "t1", "t2"], ttc)
             elif var == "stats":
                 centers, counts, trains = self.load_statistics()
                 dset = dset.assign_coords({"centers": centers})
@@ -1109,7 +1147,7 @@ class Interpreter:
                 dset["z"] = (["trainId"], z)
                 dset["T"] = (["trainId"], T)
 
-        if "azI" in dset and "g2" in dset:
+        if "azI" in dset and "ttc" in dset:
             dset["g2I"] = dset["azI"][..., np.abs(dset.qI - dset.qv).argmin("qI")].mean(
                 "pulseId"
             )
@@ -1124,8 +1162,10 @@ class Interpreter:
     def recalculate_g2(dset, pulses=None, k_baseline=20):
         t = dset.t1
 
-        tril_ind = np.tril_indices(t.size, k=-(t.size-k_baseline))
-        dset['baseline'] = dset['ttc'].isel(t1=tril_ind[0], t2=tril_ind[1]).mean(('t1', 't2'))
+        tril_ind = np.tril_indices(t.size, k=-(t.size - k_baseline))
+        dset["baseline"] = (
+            dset["ttc"].isel(t1=tril_ind[0], t2=tril_ind[1]).mean(("t1", "t2"))
+        )
 
         qv = dset.qv
         if pulses is None:
@@ -1139,17 +1179,19 @@ class Interpreter:
             ttc = dset["ttc"].stack(data=("t1", "t2"))
 
         g2 = da.apply_along_axis(convert_ttc, 1, ttc, dtype="float32", shape=(t.size,))
-        dg2 = da.apply_along_axis(convert_ttc_err, 1, ttc, dtype="float32", shape=(t.size,))
+        dg2 = da.apply_along_axis(
+            convert_ttc_err, 1, ttc, dtype="float32", shape=(t.size,)
+        )
         if "trainId" in dset.coords:
             g2 = g2.reshape(dset.trainId.size, qv.size, t.size).swapaxes(1, 2)
             dg2 = dg2.reshape(dset.trainId.size, qv.size, t.size).swapaxes(1, 2)
             dset = dset.update({"g2": (("trainId", "t_cor", "qv"), g2[:, 1:])})
-            dset['dg2'] = (("trainId", "t_cor", "qv"), dg2[:, 1:])
+            dset["dg2"] = (("trainId", "t_cor", "qv"), dg2[:, 1:])
         else:
             g2 = g2.reshape(qv.size, t.size).swapaxes(0, 1)
             dg2 = dg2.reshape(qv.size, t.size).swapaxes(0, 1)
             dset = dset.update({"g2": (("t_cor", "qv"), g2[1:])})
-            dset['dg2'] = (("t_cor", "qv"), dg2[1:])
+            dset["dg2"] = (("t_cor", "qv"), dg2[1:])
 
         return dset
 
@@ -1179,18 +1221,18 @@ class Interpreter:
 
     @staticmethod
     def _check_dataset_content(subset, dset):
-        d = {'xgm': ['xgm'],
-             'sample': ['z', 'y'],
-             'g2': ['g2'],
-             'azI': ['azI'],
-             'ttc': ['ttc'],
+        d = {
+            "xgm": ["xgm"],
+            "sample": ["z", "y"],
+            # 'g2': ['g2'],
+            "azI": ["azI"],
+            "ttc": ["ttc"],
         }
         for var in subset:
             for key in d[var]:
                 if not key in dset:
                     raise KeyError(f"'{key}' not found in dataset")
         return True
-
 
     def filter(
         self,
@@ -1208,36 +1250,49 @@ class Interpreter:
         """Filter trains based on different conditions."""
 
         self.subset = subset
-        if "ttc" in self.subset and not "g2" in self.subset:
-            self.subset.append("g2")
+        # if "ttc" in self.subset and not "g2" in self.subset:
+        #     self.subset.append("g2")
         if ttc_kws is None:
             ttc_kws = {}
 
         dset = self.to_xDataset(subset=self.subset, verbose=verbose)
-        self._check_dataset_content(self.subset, dset)
+        self._check_dataset_content(self.subset, dset, )
         self.filtered[self.run] = np.unique(dset.trainId.values)
         trainIds = self.filtered[self.run]
         trainIds0 = trainIds.copy()
 
         if "sample" in self.subset:
-            mpos = [dset["y"], dset["z"]]
-            mpos = mpos[np.argmax([np.abs(x.min() - x.max()) for x in mpos])]
-            trainIds = np.intersect1d(
-                trainIds,
-                dset.trainId[
-                    (mpos > (mpos.min() + mot_nsteps * mot_stepsize / 1000))
-                    & (mpos < (mpos.max() - mot_nsteps * mot_stepsize / 1000))
-                ],
-            )
+            if not len(np.unique(dset['y']))==1 and np.unique(dset['y'])[0] == -42:
+                mpos = [dset["y"], dset["z"]]
+                mpos = mpos[np.argmax([np.abs(x.min() - x.max()) for x in mpos])]
+                trainIds = np.intersect1d(
+                    trainIds,
+                    dset.trainId[
+                        (mpos > (mpos.min() + mot_nsteps * mot_stepsize / 1000))
+                        & (mpos < (mpos.max() - mot_nsteps * mot_stepsize / 1000))
+                    ],
+                )
+            else:
+                print(f'No motor positions found in proposal: {self.proposal}, run: {self.run}')
+                pass
+            if verbose:
+                print(
+                    f"Sample position: kept {trainIds.size/trainIds0.size*100:.1f}% of trains."
+                )
+            # if show:
+            #     plt.subplots(constrained_layout=True)
+            #     plt.scatter(np.ravel(dset['y']), np.ravel(dset['z']), )
+            #     plt.scatter(np.ravel(dset['y'].sel(trainId=trainIds)), np.ravel(dset['z'].sel(trainId=trainIds)), c='tab:red')
+            #     plt.axis('equal')
 
         if "xgm" in self.subset:
             xgm = dset["xgm"].mean("pulseId")
             test_against = trainIds if subsequent else trainIds0
-            xgm_thres = np.percentile(
-                xgm.sel(trainId=test_against).values.flatten(), 10
-            )
+            xgm_thres = np.percentile(xgm.sel(trainId=test_against).values.flatten(), 5)
             xgm_thres = max(xgm_thres, xgm_lower)
             trainIds = np.intersect1d(trainIds, dset.trainId[(xgm > xgm_thres)])
+            if verbose:
+                print(f"XGM: kept {trainIds.size/trainIds0.size*100:.1f}% of trains.")
 
         azI = None
         if "azI" in self.subset:
@@ -1255,6 +1310,8 @@ class Interpreter:
             trainIds = np.intersect1d(
                 trainIds, dset.trainId[(azI > azI_thres[0]) & (azI < azI_thres[1])]
             )
+            if verbose:
+                print(f"azI: kept {trainIds.size/trainIds0.size*100:.1f}% of trains.")
 
         self.filtered[self.run] = trainIds
 
@@ -1282,7 +1339,6 @@ class Interpreter:
                     color=colors[n][0],
                     alpha=colors[n][1],
                 )
-
 
                 if azI is not None:
                     ranges.append((0, max(azI.values.flatten())))
@@ -1317,15 +1373,15 @@ class Interpreter:
     def filter_ttc(self, dset, ttc_thres=(0.1, 2), qbin=3, show=False):
         """Filter data based on TTC values"""
         measure = (dset["ttc"] > ttc_thres[0]) & (dset["ttc"] < ttc_thres[1])
-        ttc_unfiltered = dset["ttc"].copy(deep=True)
+        ttc_unfiltered = dset["ttc"].isel(stride=0).copy(deep=True)
         dset["ttc"] = dset["ttc"].where(measure)
 
         if show:
             fig = plt.figure(
-                figsize=(self.FIGSIZE[0] * 2, self.FIGSIZE[1] * 3),
+                figsize=(self.FIGSIZE[0] * 3, self.FIGSIZE[1] * 3),
                 constrained_layout=True,
             )
-            gs = fig.add_gridspec(6, 2)
+            gs = fig.add_gridspec(6, 3)
             ax1 = fig.add_subplot(gs[:3, 0])
             ax2 = fig.add_subplot(gs[3:, 0])
             ax3 = fig.add_subplot(gs[:2, 1])
@@ -1341,7 +1397,7 @@ class Interpreter:
             ax3.set_xscale("log")
 
             im = ax2.imshow(
-                norm_ttc_diag(dset["ttc"].isel(qv=qbin).mean("trainId")),
+                norm_ttc_diag(dset["ttc"].isel(stride=0, qv=qbin).mean("trainId")),
                 origin="lower",
                 interpolation="nearest",
             )
@@ -1358,7 +1414,11 @@ class Interpreter:
 
             vmin, vmax = im.get_clim()
             ax1.imshow(
-                norm_ttc_diag(ttc_unfiltered.where(ttc_unfiltered>0).isel(qv=qbin).mean("trainId")),
+                norm_ttc_diag(
+                    ttc_unfiltered.where(ttc_unfiltered > 0)
+                    .isel(qv=qbin)
+                    .mean("trainId")
+                ),
                 vmin=vmin,
                 vmax=vmax,
                 origin="lower",
@@ -1376,10 +1436,24 @@ class Interpreter:
             )
 
             ttcshape = ttc_unfiltered[0, 0, 0].size
+            ttcflat = ttc_unfiltered.stack(ttcvals=("t1", "t2"))
+            ttcflat = ttcflat.where(ttcflat > 0)
+
+            # all ttc values
             ind = np.tril_indices(ttcshape, k=-1)
             ind = np.ravel_multi_index(ind, (ttcshape, ttcshape))
-            ttcflat = ttc_unfiltered.stack(ttcvals=('t1', 't2')).isel(ttcvals=ind)
-            ttcflat = ttcflat.where(ttcflat>0)
+            ttctril = ttcflat.isel(ttcvals=ind)
+
+            # pseudo background
+            ind = np.tril_indices(ttcshape, k=ttcshape//2)
+            ind = np.ravel_multi_index(ind, (ttcshape, ttcshape))
+            ttcbg = ttcflat.isel(ttcvals=ind)
+
+            # pseudo contrast
+            ind = np.diag_indices(ttcshape)
+            ind = (ind[0][:-1], ind[1][:-1]+1)
+            ind = np.ravel_multi_index(ind, (ttcshape, ttcshape))
+            ttcbeta = ttcflat.isel(ttcvals=ind)
 
             ax5.hist(
                 np.ravel(ttcflat),
@@ -1392,20 +1466,38 @@ class Interpreter:
             ax5.set_xlabel("TTC values")
             ax5.set_ylabel("pdf")
 
-            ttcmin = ttcflat.min('ttcvals')
-            ttcmax = ttcflat.max('ttcvals')
-            ttcmean = ttcflat.mean('ttcvals')
-            for data, marker, color in zip(
-                [ttcmin, ttcmax], ["o", "x"], ["tab:red", "k"]
-            ):
-                ax4.scatter(dset["g2I"], data, alpha=0.3, marker=marker, color=color)
+            for jj, (tmp, ylabel) in enumerate(zip(
+                [ttctril, ttcbg, ttcbeta],
+                ['tril', 'bg', 'contrast'],
+                    )):
+                if jj == 0:
+                    a = ax4
+                else:
+                    a = fig.add_subplot(gs[2*(jj-1):2*jj, 2])
+                ttcmin = tmp.min("ttcvals")
+                ttcmax = tmp.max("ttcvals")
+                ttcmean = tmp.mean("ttcvals")
+                colors = ["tab:red", "gray", "tab:orange"]
+                labels = ['min', 'max', 'mean']
+                markers = "..."
+                for data, marker, color, label in zip(
+                        [ttcmin, ttcmax, ttcmean],
+                        markers,
+                        colors,
+                        labels
+                ):
+                    a.scatter(dset["g2I"], data, alpha=0.1,
+                                marker=marker, s=1, color=color)
 
-            ax4.set_xscale("log")
-            ax4.set_yscale("log")
-            ax4.set_xlabel("average number photons")
-            ax4.set_ylabel("max(TTC)")
+                a.set_xscale("log")
+                a.set_yscale("log")
+                a.set_xlabel("average number photons")
+                a.set_ylabel(f"TTC value ({ylabel})")
+                custom_legend(a, labels, colors)
+                xl = a.get_xlim()
+                a.hlines(1, 1.1*xl[0], 0.9*xl[1], ls=':', color='k')
 
-            for a in [ax1, ax2, ax3, ax4, ax5]:
+            for a in fig.get_axes():
                 a.minorticks_on()
 
         return dset
@@ -1442,17 +1534,21 @@ class AnaFile:
                     self.FMT = FMT
                     break
                 elif i == 1:
-                    raise FileNotFoundError(f"Run: {var[0]}, ID: {var[1]}, not found in {self.dirname}")
+                    raise FileNotFoundError(
+                        f"Run: {var[0]}, ID: {var[1]}, not found in {self.dirname}"
+                    )
 
         elif isinstance(var, str):
             filename = var
-            base = filename.split('/')[-1]
-            if 'analysis' in base:
+            base = filename.split("/")[-1]
+            if "analysis" in base:
                 self.FMT = self.ANA_FMT
-            elif 'dark' in base:
+            elif "dark" in base:
                 self.FMT = self.DARK_FMT
         else:
-            raise ValueError(f"Input type {type(var)} of file identifier not understood.")
+            raise ValueError(
+                f"Input type {type(var)} of file identifier not understood."
+            )
         filename = os.path.abspath(filename)
         self.basename = os.path.basename(filename)
         self.dirname = os.path.dirname(filename)
@@ -1474,8 +1570,10 @@ class AnaFile:
     def _get_setupfile(
         self,
     ):
-        self.setupbase = self.basename.replace("analysis", "setup").replace('dark', 'setup').replace(
-            ".h5", ".yml"
+        self.setupbase = (
+            self.basename.replace("analysis", "setup")
+            .replace("dark", "setup")
+            .replace(".h5", ".yml")
         )
         self.setupfile = os.path.join(self.dirname, self.setupbase)
         if not os.path.isfile(self.setupfile):

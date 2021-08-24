@@ -4,9 +4,10 @@ import pdb
 import numpy as np
 import numba
 from numba import prange
-import scipy.integrate as integrate
-import scipy.ndimage as ndimage
+from scipy import integrate
+from scipy import ndimage
 from time import time
+from itertools import cycle
 import pickle
 import xarray
 import h5py
@@ -45,14 +46,16 @@ def ttc_to_g2_ufunc(ttc, dims, time=None):
 
 
 def convert_ttc(ttc):
-    ttc = ttc.reshape(int(np.sqrt(ttc.size)), -1)
+    # ttc = ttc.reshape(int(np.sqrt(ttc.size)), -1)
     g2 = ttc_to_g2(ttc)
     return g2[:, 1]
 
+
 def convert_ttc_err(ttc):
-    ttc = ttc.reshape(int(np.sqrt(ttc.size)), -1)
+    # ttc = ttc.reshape(int(np.sqrt(ttc.size)), -1)
     g2 = ttc_to_g2(ttc)
     return g2[:, 2]
+
 
 def blur_gauss(U, sigma=2.0, truncate=4.0):
 
@@ -147,21 +150,22 @@ def update_rois_beta(data, rois, rng=(-0.5, 2)):
     return rois
 
 
-def update_mask(mask, data, rmap):
+def update_mask(data, rmap, mask):
 
-    average = data.mean(0)
-    variance = data.var(0)
-    mask = mask_radial(average, rmap, mask)
+    # average = data.mean(0)
+    # variance = data.var(0)
+    mask = mask_radial(data, rmap, mask, lower_quantile=0.01)
 
-    mask = mask_radial(
-        variance / average ** 2,
-        rmap,
-        mask=mask,
-        lower_quantile=0.01,
-    )
+    # mask = mask_radial(
+    #     variance / average ** 2,
+    #     rmap,
+    #     mask=mask,
+    #     lower_quantile=0.01,
+    # )
 
-    mask = mask_asics(mask)
+    # mask = mask_asics(mask)
     return mask
+
 
 def get_qarr(q_range):
     if "nsteps" in q_range:
@@ -176,11 +180,14 @@ def get_qarr(q_range):
         )
     return qarr
 
+
 def get_xpcs_rois(qarr, qmap, valid):
     rois = []
     bad_qs = []
     for i, (qi, qf) in enumerate(zip(qarr[:-1], qarr[1:])):
-        roi = np.where((qmap.flatten() > qi) & (qmap.flatten() < qf) & valid.flatten())[0]
+        roi = np.where((qmap.flatten() > qi) & (qmap.flatten() < qf) & valid.flatten())[
+            0
+        ]
         if len(roi) > 100:
             rois.append(roi)
         else:
@@ -202,7 +209,7 @@ def correlate(
     h5filename=None,
     norm_xgm=False,
     chunks=None,
-    batch_size=10,
+    batch_size=16,
     **kwargs,
 ):
     """Calculate XPCS correlation functions of a run using dask.
@@ -246,129 +253,134 @@ def correlate(
 
         data = data.reshape(-1, 16 * 512 * 128)
         valid = (data >= 0).all(0) & mask.flatten()
-        # valid = update_mask(valid, data, qmap.flatten())
-        # valid = valid.flatten()
-        rois, bad_qs = get_xpcs_rois(qarr, qmap, valid)
 
+        # valid = update_mask(np.mean(data, axis=0, keepdims=True), qmap.flatten(), valid)
+        # valid = valid.flatten()
+
+        rois, bad_qs = get_xpcs_rois(qarr, qmap, valid)
         # rois = update_rois_beta(data, rois);
         rois = [np.unravel_index(x, (16 * 512, 128)) for x in rois]
 
         # get only the q-bins in range
         qv = qarr[: len(rois)] + (qarr[1] - qarr[0]) / 2.0
 
-        out = pyxpcs(
-            data.reshape(-1, 16 * 512, 128),
-            rois,
-            mask=valid.reshape(16 * 512, 128),
-            nprocs=1,
-            verbose=False,
-            **kwargs,
-        )
-
-        if method == "intra_train":
-            corf = out["corf"]
-            t = corf[1:, 0]
-            corf = corf[1:, 1:]
-        elif method == "intra_train_ttc":
-            corf = np.dstack(out["twotime_corf"].values()).T
-            t = out["twotime_xy"]
-
         if return_ == "all":
+            out = pyxpcs(
+                data.reshape(-1, 16 * 512, 128),
+                rois,
+                mask=valid.reshape(16 * 512, 128),
+                nprocs=1,
+                verbose=False,
+                **kwargs,
+            )
+            corf = out["corf"]
+            t = out["twotime_xy"]
+            corf = corf[1:, 1:]
             return t, corf, qv
-        elif return_ == "corf":
-            for bad_q in bad_qs:
-                corf[bad_q] *= 0
-                corf[bad_q] -= 100
-            return corf.astype("float32")
-        elif return_ == "ttc":
-            pass
 
-    if chunks is None:
-        chunks = {
-            "intra_train": {"trainId": 1, "train_data": 16 * 512 * 128},
-            "intra_train_ttc": {"trainId": 1, "train_data": 16 * 512 * 128},
-        }
+        elif return_ == "ttc":
+            data = data.reshape(-1, npulses, 16 * 512, 128)
+            ntrains = data.shape[0]
+            ttcs = [[] for _ in range(len(strides) + 1)]
+            data_indices = np.arange(ntrains)
+            for istride, stride in enumerate(strides):
+                xdata_indices = np.roll(data_indices, -1 * abs(stride))
+                for i, j in zip(data_indices, xdata_indices):
+                    train = data[i]
+                    crossdata = data[j]
+                    out = pyxpcs(
+                        train,
+                        rois,
+                        mask=valid.reshape(16 * 512, 128),
+                        nprocs=1,
+                        crossdata=crossdata,
+                        verbose=False,
+                        **kwargs,
+                    )
+                    if istride == 0:
+                        ttcs[0].append(list(out["twotime_corf"].values()))
+                    ttcs[istride + 1].append(list(out["xtwotime_corf"].values()))
+            return np.stack(ttcs)
 
     arr = calibrator.data.copy(deep=False)
-    npulses = np.unique(arr.pulseId.values).size
+    npulses = len(arr.pulseId)
 
-    if norm_xgm:
-        with h5py.File(h5filename, "r") as f:
-            xgm = f["pulse_resolved/xgm/energy"][:]
-        xgm = xgm[:last, :npulses]
-        xgm = xgm / xgm.mean(1)[:, None]
-        print(f"Read XGM data from {h5filename} for normalization")
-        arr = arr / xgm[None, None, None, ...]
-
-    arr = arr.unstack()
+    # arr = arr.unstack('train_pulse')
     trainId = arr.trainId
-    arr = arr.stack(train_data=("pulseId", "module", "dim_0", "dim_1"))
-    arr = arr.chunk(chunks[method])
-    npulses = arr.shape[1] // (16 * 512 * 128)
-
-    # arr = arr.groupby_bins('trainId', bins=)
+    arr["trainId"] = np.arange(len(trainId))
 
     qarr = get_qarr(q_range)
+    t, _, qv = calculate_correlation(
+        np.ones((npulses, 16, 512, 128)), return_="all", **kwargs
+    )
+
+    arr = arr.assign_coords(batch=arr.trainId // batch_size)
+    arr = arr.groupby("batch")
+    strides = np.array([1, 10])
 
     # do the actual calculation
     if "intra_train" in method:
-        t, corf, qv = calculate_correlation(
-            np.ones(arr[0].shape), return_="all", **kwargs
-        )
 
-        dim = arr.get_axis_num("train_data")
-        out = da.apply_along_axis(
+        dset = xarray.apply_ufunc(
             calculate_correlation,
-            dim,
-            arr.data,
-            dtype="float32",
-            shape=corf.shape,
-            return_="corf",
-            **kwargs,
+            arr,
+            input_core_dims=[["trainId", "pulseId", "pixels"]],
+            exclude_dims=set(["pulseId", "pixels"]),
+            output_core_dims=[["stride", "trainId", "qv", "t1", "t2"]],
+            dask_gufunc_kwargs={
+                "output_sizes": {
+                    "stride": len(strides) + 1,
+                    "qv": len(qv),
+                    "t1": len(t),
+                    "t2": len(t),
+                },
+                "allow_rechunk": True,
+            },
+            dask="parallelized",
+            vectorize=True,
+            kwargs=dict(return_="ttc", **kwargs),
+            output_dtypes=(np.float32),
         )
-
-        if "ttc" in method:
-            dset = xarray.Dataset(
-                {
-                    "ttc": (["trainId", "qv", "t1", "t2"], out),
-                },
-                coords={
-                    "trainId": trainId,
-                    "t1": t,
-                    "t2": t,
-                    "qv": qv,
-                },
-            )
-            g2 = da.apply_along_axis(
-                convert_ttc,
-                1,
-                dset["ttc"].stack(meas=("trainId", "qv"), data=("t1", "t2")),
-                dtype="float32",
-                shape=(t.size,),
-            )
-            g2 = g2.reshape(dset.trainId.size, qv.size, t.size).swapaxes(1, 2)
-            dset = dset.assign_coords(t_cor=t[1:])
-            dset = dset.assign(g2=(("trainId", "t_cor", "qv"), g2[:, 1:]))
-        else:
-            dset = xarray.Dataset(
-                {
-                    "g2": (["trainId", "t_cor", "qv"], out),
-                },
-                coords={
-                    "trainId": trainId,
-                    "t_cor": t,
-                    "qv": qv,
-                },
-            )
+        dset = dset.drop("batch")
+        coords = {
+            "trainId": trainId,
+            "stride": np.append(0, strides),
+            "t1": t,
+            "t2": t,
+            "qv": qv,
+        }
+        dset = dset.to_dataset(name="ttc")
+        dset = dset.assign_coords(coords)
+        dset = dset.chunk({"trainId": 1})
 
         dset = dset.persist()
         progress(dset)
-        del arr, out
+
+        # if "ttc" in method:
+
+        # g2 = xarray.apply_ufunc(
+        #     convert_ttc,
+        #     dset['ttc'],
+        #     input_core_dims=[['t1', 't2']],
+        #     exclude_dims=set(['t1', 't2']),
+        #     output_core_dims=[['t_cor']],
+        #     dask_gufunc_kwargs={'allow_rechunk':True, 'output_sizes':{'t_cor':len(t)}},
+        #     dask='parallelized',
+        #     vectorize=True,
+        #     output_dtypes=(np.float32),
+        # )
+        # g2 = g2.rename('g2')
+        # g2 = g2.assign_coords({'t_cor': t})
+        # g2 = g2.isel(t_cor=slice(1,None))
+        # g2 = g2.persist()
+
+        # del arr, ttc, xttc
 
         savdict = {
-            "q(nm-1)": dset.qv.values,
-            "t(s)": dset.t_cor.values,
-            "corf": dset.get("g2", None),
+            "q(nm-1)": dset.qv,
+            "t(s)": dset.t1,
+            "strides": dset.stride,
+            # "corf": np.ones((dset.trainId.size, dset.qv.size)),
             "ttc": dset.get("ttc", None),
         }
         return savdict
