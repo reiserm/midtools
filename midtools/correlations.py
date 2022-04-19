@@ -2,8 +2,6 @@ import pdb
 
 # standard python packages
 import numpy as np
-import numba
-from numba import prange
 from scipy import integrate
 from scipy import ndimage
 from time import time
@@ -124,30 +122,6 @@ def update_rois(data, rois, doplot=False):
                 plot(data[:, p], "o", color=pcolors[ip])
     return rois
 
-
-@numba.jit(parallel=True, nopython=True)
-def update_rois_beta(data, rois, rng=(-0.5, 2)):
-    def calc_beta(c):
-        n = c.shape[0]
-        ind = np.sum(c >= 0, 0)
-        ind = ind == n
-        s = np.sum(c, 0)
-        s1 = np.sum(c == 1, 0)
-        s0 = np.sum(c == 0, 0)
-
-        beta = s0 / s1 - n / s
-        beta[~ind] = -2
-        return beta
-
-    for i in prange(len(rois)):
-        roi = rois[i]
-        beta = calc_beta(data[:, roi])
-
-        rois[i] = rois[i][(beta > rng[0]) & (beta < rng[1])]
-        if len(rois[i]) == 0:
-            rois[i] = np.array([0])
-
-    return rois
 
 
 def update_mask(data, rmap, mask):

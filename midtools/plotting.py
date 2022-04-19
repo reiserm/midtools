@@ -14,6 +14,7 @@ from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 import h5py as h5
 import seaborn as sns
+from pathlib import Path
 
 from scipy.stats import sem
 from Xana.XpcsAna.pyxpcs3 import pyxpcs
@@ -1106,6 +1107,7 @@ class Interpreter:
                 "pulseId": pulses,
             },
         )
+        dset = dset.chunk(chunks={'trainId':32})
         # add metadata
         dset["sample"] = sample
 
@@ -1246,6 +1248,7 @@ class Interpreter:
         subset=None,
         subsequent=True,
         ttc_kws=None,
+        savefig=None,
     ):
         """Filter trains based on different conditions."""
 
@@ -1362,15 +1365,23 @@ class Interpreter:
                     axis="both", direction="out", which="both", right=True, top=True
                 )
                 a.minorticks_on()
+            if savefig:
+                self.savefig(fig, savefig+'/xgm-filter')
 
         dset = dset.sel(trainId=trainIds)
 
         if "ttc" in self.subset:
-            dset = self.filter_ttc(dset, show=show, **ttc_kws)
+            dset = self.filter_ttc(dset, show=show, savefig=savefig, **ttc_kws)
 
         return dset
 
-    def filter_ttc(self, dset, ttc_thres=(0.1, 2), qbin=3, show=False):
+    def savefig(self, fig, fname):
+        folder = Path('/'.join(fname.split('/')[:-1]))
+        if not folder.is_dir():
+            folder.mkdir()
+        fig.savefig(fname+f"_{self.proposal}-{self.run}-{self.index}.png", dpi=300,)
+
+    def filter_ttc(self, dset, ttc_thres=(0.1, 2), qbin=3, show=False, savefig=False):
         """Filter data based on TTC values"""
         measure = (dset["ttc"] > ttc_thres[0]) & (dset["ttc"] < ttc_thres[1])
         ttc_unfiltered = dset["ttc"].isel(stride=0).copy(deep=True)
@@ -1500,6 +1511,8 @@ class Interpreter:
             for a in fig.get_axes():
                 a.minorticks_on()
 
+            if savefig:
+                self.savefig(fig, savefig+'/ttc-filter')
         return dset
 
 

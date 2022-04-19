@@ -5,7 +5,6 @@ import xarray as xr
 from dask.distributed import Client, progress
 import warnings
 import h5py as h5
-import bottleneck as bn
 
 import pdb
 

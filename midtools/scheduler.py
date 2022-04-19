@@ -1,6 +1,7 @@
 import os
 import stat
 import re
+import pdb
 from pathlib import Path
 import getpass
 
@@ -44,7 +45,7 @@ def get_running_jobs():
 
 
 def find_jobid(output):
-    sres = re.search("(?<=SLURM_JOB_ID)\s*\d{7}", output)
+    sres = re.search("(?<=SLURM_JOB_ID)\s*\d{8}", output)
     return int(sres.group(0)) if bool(sres) else 0
 
 
@@ -184,6 +185,7 @@ def get_tcp(s):
     return None
 
 
+from shutil import SameFileError
 def log_error(df, jobdir):
     failed_jobs_file = (
         Path(jobdir).parent.joinpath("failed-jobs").joinpath("failed-jobs.yml")
@@ -208,7 +210,7 @@ def log_error(df, jobdir):
                 fcontent[key] = ""
 
             if key == "err":
-                shutil.copy(fname, failed_jobs_file.parent.joinpath(row[key + "file"]))
+                shutil.copy(fname, failed_jobs_file.parent.joinpath(row[key + "file"].name))
 
         failed[find_jobid(fcontent["out"])] = {
             "tcp": get_tcp(fcontent["out"]),

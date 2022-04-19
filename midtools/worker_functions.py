@@ -2,7 +2,6 @@ import numpy as np
 import warnings
 import xarray as xr
 import dask
-import bottleneck as bn
 from functools import wraps
 
 

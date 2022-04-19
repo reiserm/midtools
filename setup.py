@@ -38,8 +38,6 @@ setup(
         "dask[complete]",
         "dask_jobqueue",
         "Xana",
-        "numba",
-        "bottleneck",
     ],
     entry_points={
         "console_scripts": [
