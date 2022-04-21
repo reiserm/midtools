@@ -41,7 +41,7 @@ setup(
         "tqdm",
     ],
     include_package_data = True,
-    package_data={'': ['midtools/setup_config/metadata.pkl']},
+    package_data={'setup_config': ['metadata.pkl']},
     data_files=[('setup_config', ['midtools/setup_config/metadata.pkl', 
                                   'midtools/setup_config/darkmask_r0283_00.npy']),
                ],
