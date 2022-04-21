@@ -40,7 +40,8 @@ setup(
         "Xana",
         "tqdm",
     ],
-    data_files=[('config_setup', ['midtools/setup_config/metadata.pkl', 
+    include_package_data = True,
+    data_files=[('setup_config', ['midtools/setup_config/metadata.pkl', 
                                   'midtools/setup_config/darkmask_r0283_00.npy']),
                ],
     entry_points={
