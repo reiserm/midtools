@@ -41,7 +41,7 @@ setup(
         "tqdm",
     ],
     include_package_data = True,
-    package_data={'setup_config': ['metadata.pkl']},
+    package_data={'midtools.setup_config': ['metadata.pkl']},
     entry_points={
         "console_scripts": [
             "midtools = midtools.dataset:main",
