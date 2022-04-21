@@ -614,7 +614,7 @@ class Dataset:
         threads_per_process = opt.pop("cores", 40)
         if self.is_dark or self.is_flatfield:
             nprocs = 1
-        njobs = opt.pop("njobs", min(max(int(self.ntrains / 64), 4), 12))
+        njobs = opt.pop("njobs", min(max(int(self.ntrains / 64), 4), 4))
         if self._localcluster:
             self._cluster = LocalCluster(
                 n_workers=nprocs,
@@ -622,7 +622,7 @@ class Dataset:
         else:
             print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
             self._cluster = SLURMCluster(
-                queue=opt.get("partition", opt.pop("partition", "exfel")),
+                queue=opt.get("partition", opt.pop("partition","upex")),
                 processes=nprocs,
                 cores=threads_per_process,
                 memory=opt.pop("memory", "400GB"),
@@ -630,9 +630,9 @@ class Dataset:
                 local_directory="/scratch/",
                 nanny=True,
                 death_timeout=60 * 60,
-                walltime="3:00:00",
+                walltime="6:00:00",
                 interface="ib0",
-                name="MIDtools",
+                name="midtools",
             )
             self._cluster.scale(nprocs * njobs)
             # self._cluster.adapt(maximum_jobs=njobs)
@@ -913,6 +913,7 @@ class Dataset:
             dt=self.pulse_delay,
             use_multitau=False,
             rebin_g2=False,
+            norm='symmetric',
             h5filename=self.file_name,
             method="intra_train",
         )
@@ -1318,7 +1319,7 @@ def _submit_slurm_job(run, args, test=False):
 #SBATCH --error={job_file}.err
 #SBATCH --partition=upex
 #SBATCH --exclusive
-#SBATCH --time 03:00:00
+#SBATCH --time 06:00:00
 
 source /gpfs/exfel/data/scratch/reiserm/mid-proteins/.proteins38/bin/activate
 echo "SLURM_JOB_ID           $SLURM_JOB_ID"

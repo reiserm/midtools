@@ -336,9 +336,106 @@ def merge_files(outfile, filenames, h5_structure, delete_file=False):
                 anafile.remove()
 
 
+def load_yaml_to_dict(filename):
+    with open(filename) as f:
+        return yaml.load(f, Loader=yaml.FullLoader)
+
+
+def get_closest_entry(d, proposal, run, verbose=True):
+    proposals = np.asarray(list(d.keys()))
+    proposal = proposals[np.argmin(np.abs(proposals-proposal))]
+    runs = np.asarray(list(d[proposal].keys()))
+    run = runs[np.argmin(np.abs(runs-run))]
+    if verbose:
+        print(
+            f"Closest database entry found for proposal: {proposal}, run:{run}")
+    return d[proposal][run]
+
+
+def get_setupfile_content(proposal, run, masksfile=None, quadposfile=None):
+    if masksfile is None:
+        masksfile = r'/home/reiserm/scratch/mid-proteins/masks/masks.yml'
+    if quadposfile is None:
+        quadposfile = r'/home/reiserm/scratch/mid-proteins/geoms/quadrant-positions.yml'
+    out = {}
+    keys = ['quadrant_positions', 'mask']
+    files = [quadposfile, masksfile]
+    for key, f in zip(keys, files):
+        print(f"Searching for '{key}' in database")
+        d = load_yaml_to_dict(f)
+        out[key] = get_closest_entry(d, proposal, run)[key]
+    return out
+
+
+def write_tmp_setupfile(d, tmpdir='./tmp/'):
+    tmpdir = os.path.abspath(tmpdir)
+    if not os.path.isdir(tmpdir):
+        os.makedirs(tmpdir)
+    tmpname = "tmp_setup-config_" + \
+        time.strftime("%Y-%m-%d_T%H-%M-%S") + ".yml"
+    tmpname = os.path.join(tmpdir, tmpname)
+    with open(tmpname, 'w') as f:
+        yaml.dump(d, f)
+    return tmpname
+
+
+def create_setupfile(proposal, run, basefile=None, tmpdir='./tmp/', search_database=False):
+    if basefile is None:
+        basefile = "/".join(__file__.split('/')[:-1]) + "/setup_config/setup.yml"
+    d = load_yaml_to_dict(basefile)
+    if search_database:
+        d.update(get_setupfile_content(proposal, run))
+    return write_tmp_setupfile(d, tmpdir)
+
+def start_midtools(
+        proposal,
+        run_number,
+        setupfile=None,
+        pulses_per_train=None,
+        datdir=None,
+        first_train=0,
+        last_train=1000,
+        first_cell=0,
+        pulse_step=1,
+        test=False,
+        jobdir='./jobs',
+        base_dir=f'./analyzed_runs/',
+        saxs=True,
+        xpcs=True,
+        ):
+
+    out_dir = os.path.join(base_dir, f'p{proposal:06d}')
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
+
+    setupfile = create_setupfile(
+        proposal, run_number, basefile=setupfile, tmpdir='./tmp/')
+
+    analysis = f'1{int(saxs)}{int(xpcs)}0'
+    args = {'setupfile': setupfile,
+            'analysis': analysis,
+            'job_dir': jobdir,
+            'out-dir': out_dir,
+            'pulses_per_train': pulses_per_train,
+            'pulse_step': pulse_step,
+            'datdir': datdir,
+            'first-train': first_train,
+            'last-train': last_train,
+            'first-cell': first_cell,
+            }
+
+    _submit_slurm_job(run_number, args, test=test)
+
+
 class Scheduler:
     def __init__(self, jobdir):
+        jobdir = os.path.abspath(jobdir)
+
+        if not os.path.exists(jobdir):
+            os.mkdir(jobdir)
+
         self.jobdir = jobdir
+
         self.df = None
         self.sel_run = None
 
@@ -382,8 +479,21 @@ class Scheduler:
                 # jobc = re.sub("(^\[\#{0,39}\s*\].*$)*", "", jobc, re.MULTILINE)
 
                 with output:
+                    IPython.display.clear_output()
                     # print(jobc)
                     print("\n".join(lastline))
+
+        def on_button_clicked_stop_running_job(b):
+            table_index = int(table_index_IntText.value)
+            jobid = int(self.df.loc[table_index, 'slurm-id'])
+            subprocess.run(["scancel", str(jobid)])
+
+        def on_button_clicked_list_jobs(b):
+            with output:
+                IPython.display.clear_output()
+                subout = subprocess.check_output(f"squeue -u {getpass.getuser()}", shell=True)
+                print(subout.decode('utf-8'))
+
 
         jobtable_button = widgets.Button(
             description="Update Job Table / Clear Output", layout=Layout(flex="1 0 auto", width="auto")
@@ -396,6 +506,12 @@ class Scheduler:
         )
         handle_failed_button = widgets.Button(
             description="Handle Failed", layout=Layout(flex="1 0 auto", width="auto")
+        )
+        stop_running_job_button = widgets.Button(
+            description="stop slurm job", layout=Layout(flex="1 0 auto", width="auto")
+        )
+        list_jobs_button = widgets.Button(
+            description="list jobs", layout=Layout(flex="1 0 auto", width="auto")
         )
 
         remove_checkbox = widgets.Checkbox(
@@ -426,7 +542,7 @@ class Scheduler:
             layout=Layout(flex="1 1 0%", width="auto"),
         )
         table_length_IntText = widgets.IntText(
-            description="tail",
+            description="Output Length",
             continuous_update=False,
             value=8,
             layout=Layout(flex="1 1 0%", width="auto"),
@@ -450,7 +566,7 @@ class Scheduler:
             flex_flow="flex-start",
             align_items="flex-start",
             justify_content="flex-start",
-            width="70%",
+            width="80%",
         )
         v_checkboxes = widgets.VBox([remove_checkbox, resubmit_checkbox])
 
@@ -466,16 +582,23 @@ class Scheduler:
             [
                 subset_Dropdown,
                 clean_jobdir_button,
-                v_checkboxes,
-                handle_failed_button,
+                list_jobs_button,
+                stop_running_job_button,
             ],
             layout=box_layout,
         )
         hbox3 = widgets.HBox(
-            [print_file_button, table_index_IntText, print_file_Dropdown],
+           [remove_checkbox,
+            resubmit_checkbox,
+            handle_failed_button,
+            ],
+           layout=box_layout,
+        )
+        hbox4 = widgets.HBox(
+            [table_index_IntText, print_file_Dropdown, print_file_button],
             layout=box_layout,
         )
-        vbox = widgets.VBox([hbox1, hbox2, hbox3])
+        vbox = widgets.VBox([hbox1, hbox2, hbox3, hbox4])
 
         output = widgets.Output()
         display(vbox, output)
@@ -484,3 +607,5 @@ class Scheduler:
         clean_jobdir_button.on_click(on_button_clicked_clean_jobdir)
         handle_failed_button.on_click(on_button_clicked_handle_failed)
         print_file_button.on_click(on_button_clicked_print_file)
+        stop_running_job_button.on_click(on_button_clicked_stop_running_job)
+        list_jobs_button.on_click(on_button_clicked_list_jobs)
