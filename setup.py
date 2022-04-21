@@ -39,6 +39,7 @@ setup(
         "dask_jobqueue",
         "Xana",
         "tqdm",
+        "pickle5",
     ],
     include_package_data = True,
     package_data={'midtools.setup_config': ['*.pkl', '*.npy']},
