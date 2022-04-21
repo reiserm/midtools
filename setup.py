@@ -38,7 +38,10 @@ setup(
         "dask[complete]",
         "dask_jobqueue",
         "Xana",
+        "tqdm",
     ],
+    package_data={'': ['midtools/setup_config/*']},
+    include_package_data=True,
     entry_points={
         "console_scripts": [
             "midtools = midtools.dataset:main",
