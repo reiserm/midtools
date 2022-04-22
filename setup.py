@@ -43,7 +43,7 @@ setup(
         "pickle5",
     ],
     include_package_data = True,
-    package_data={'midtools.setup_config': ['*.pkl', '*.npy']},
+    package_data={'midtools.setup_config': ['*.pkl', '*.npy', '*.ipynb']},
     entry_points={
         "console_scripts": [
             "midtools = midtools.dataset:main",
