@@ -11,33 +11,31 @@ Further information can be found on [ReadTheDocs](https://midtools.readthedocs.i
 ### Recommended Installation
 
 It is recommended to create a new virtual environmet when using `midtools`.
-Make sure that all other environments, especially conda environments, are
-deactivated. Let's assume you would like to work in a folder dedicated to your
-project.
+If you are working on the Maxwell cluster (DESY). Use the following steps:
 
 ```sh
 mkdir my_project
 cd my_project
-python3 -m venv .venv
+module load maxwell anaconda-python/3.8
+python -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install git+https://github.com/reiserm/Xana.git
-pip install git+https://github.com/reiserm/midtools.git
+pip install --upgrade git+https://github.com/reiserm/midtools.git
 ```
 
-The virutal can be deactivated by typing `deactivate`. Before running
-`midtools` it is recommended to increase the limit of open files:
+The virutal environment can be deactivated by typing `deactivate`. 
+
+
+### Example Jupyter Notebook
+
+The example notebook `midtools/setup_fonfig/analyze-run.ipynb` demonstrates how to process data with midtools. 
+Create an IPython kernel based on the environment you created before:
 
 ```sh
-ulimit -n 4096
+cd my_project
+source .venv/bin/activate
+pip install --upgrade ipykernel
+python -m ipykernel install --user --name midtools
 ```
 
-
-### Standard Installation
-
-Install most recent version from GitHub:
-```sh
-git clone https://github.com/reiserm/midtools.git
-cd midtools
-pip install .
-```
+Run the notebook on Max-JHub. The kernel `midtools` should be available in the list of kernels.
