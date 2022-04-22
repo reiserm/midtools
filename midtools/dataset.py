@@ -1313,6 +1313,8 @@ def _submit_slurm_job(run, args, test=False):
     if not os.path.exists(job_dir) and not test:
         os.mkdir(job_dir)
 
+    env_dir = '/'.join(sys.executable.split('/')[:-2])
+
     TEMPLATE = """#!/bin/bash
 #SBATCH --job-name=midtools
 #SBATCH --output={job_file}.out
@@ -1321,7 +1323,7 @@ def _submit_slurm_job(run, args, test=False):
 #SBATCH --exclusive
 #SBATCH --time 06:00:00
 
-source /gpfs/exfel/data/scratch/reiserm/mid-proteins/.proteins38/bin/activate
+source {env_dir}/bin/activate
 echo "SLURM_JOB_ID           $SLURM_JOB_ID"
 type midtools
 
@@ -1347,8 +1349,10 @@ exit
             "job_name": job_name,
             "job_file": job_file,
             "midtools_args": midtools_args,
+            "env_dir": env_dir,
         }
     )
+
 
     print(f"Generating and submitting sbatch for job {job_name}")
 
