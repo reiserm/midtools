@@ -13,10 +13,12 @@ from datetime import datetime
 import numpy as np
 import h5py as h5
 import argparse
+from pathlib import Path
 from shutil import copyfile
 
 # XFEL packages
-from extra_data import RunDirectory
+import extra_data
+from extra_data import RunDirectory, open_run
 from extra_geom import AGIPD_1MGeometry
 
 # Dask and xarray
@@ -87,6 +89,7 @@ class Dataset:
         self,
         run_number,
         setupfile,
+        proposal=None,
         analysis=None,
         datdir=None,
         first_train=0,
@@ -223,6 +226,7 @@ class Dataset:
                         self.analysis.append(method.lower())
 
         self.run_number = run_number
+        self.proposal = proposal
         self.datdir = setup_pars.pop("datdir", datdir)
         #: DataCollection: e.g., returned from extra_data.RunDirectory
         self.run = RunDirectory(self.datdir)
@@ -339,7 +343,9 @@ class Dataset:
 
     @datdir.setter
     def datdir(self, path):
-        if isinstance(path, dict):
+        if path is None:
+            return
+        elif isinstance(path, dict):
             basedir = "/gpfs/exfel/exp/MID/"
             if (
                 len(
@@ -370,6 +376,11 @@ class Dataset:
                     "number with --run argument or pass data directory "
                     "with run folder (e.g., r0123.)"
                 )
+        elif isinstance(self.run_number, np.integer) and isinstance(self.proposal, np.integer):
+            self.run = open_run(self.run_number, proposal, data='raw')
+            self.__datdir = str(Path(self.run.files[0].filename).parent)
+        elif isinstance(self.run, extra_data.reader.DataCollection):
+            self.__datdir = str(Path(self.run.files[0].filename).parent)
         else:
             raise ValueError(f"Invalid data directory: {path}")
 
@@ -418,6 +429,10 @@ class Dataset:
             pass
         elif number is None:
             pass
+        elif isinstance(number, extra_data.reader.DataCollection):
+            self.run = number
+            self.datdir = str(Path(self.run.files[0].filename).parent)
+            return # run_number is updated in datdir setter
         else:
             raise TypeError(f"Invalid run number type {type(number)}.")
         self.__run_number = number
@@ -614,7 +629,11 @@ class Dataset:
         threads_per_process = opt.pop("cores", 40)
         if self.is_dark or self.is_flatfield:
             nprocs = 1
-        njobs = opt.pop("njobs", min(max(int(self.ntrains / 64), 4), 4))
+        if isinstance(self.ntrains, np.integer):
+            default_number_jobs = min(max(int(self.ntrains / 64), 4), 4)
+        else:
+            default_number_jobs = 4
+        njobs = opt.pop("njobs", default_number_jobs)
         if self._localcluster:
             self._cluster = LocalCluster(
                 n_workers=nprocs,
