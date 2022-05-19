@@ -1388,7 +1388,7 @@ def run_single(run_number, setupfile, analysis, **kwargs):
 
     t_start = time.time()
 
-    dataset = Dataset(run_number, setupfile, analysis, **kwargs)
+    dataset = Dataset(run_number, setupfile, analysis=analysis, **kwargs)
     print("Protein Mode")
     print(f"\n{' Starting Analysis ':-^50}")
     print(f"Analyzing {dataset.datdir}")
