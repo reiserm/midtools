@@ -36,7 +36,7 @@ import Xana
 from Xana import Setup
 
 from .azimuthal_integration import azimuthal_integration
-from .correlations import correlate
+from .correlations import correlate, get_q_phi_pixels
 from .average import average
 from .statistics import statistics
 from .calibration import Calibrator, _create_mask_from_dark, _create_mask_from_flatfield
@@ -617,8 +617,25 @@ class Dataset:
         self.setup.detector.set_pixel_corners(dist)
         self.setup._update_ai()
         qmap = self.setup.ai.array_from_unit(unit="q_nm^-1")
+        phimap = self.setup.ai.chiArray()
         #: np.ndarray: q-map
         self.qmap = qmap.reshape(16, 512, 128)
+        #: np.ndarray: azimhuthal-angle-map
+        self.phimap = phimap.reshape(16, 512, 128)
+
+        self.setup.mask = self.setup.mask.reshape(-1,128)
+        self.setup = get_q_phi_pixels(self.setup, self._xpcs_opt)
+        self.setup.mask = self.setup.mask.reshape(16,512,128)
+
+        #save array of rois
+        img = np.zeros((16,512,128))
+        img[~self.setup.mask] = np.nan
+        img = img.reshape(-1, 128)
+        for i, roi in enumerate(self.setup.qroi):
+            img[roi] = i+1
+        img = img.reshape(16,512,128)
+        np.save(f"{self.out_dir}/rois.npy", self.__agipd_geom.position_modules_fast(img)[0])
+
 
     def _start_slurm_cluster(self):
         """Initialize the slurm cluster"""
