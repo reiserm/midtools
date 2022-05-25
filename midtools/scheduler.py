@@ -402,6 +402,7 @@ def start_midtools(
         base_dir=f'./analyzed_runs/',
         saxs=True,
         xpcs=True,
+        frames=True,
         ):
 
     out_dir = os.path.join(base_dir, f'p{proposal:06d}')
@@ -411,7 +412,7 @@ def start_midtools(
     setupfile = create_setupfile(
         proposal, run_number, basefile=setupfile, tmpdir='./tmp/')
 
-    analysis = f'1{int(saxs)}{int(xpcs)}0'
+    analysis = f'{int(frames)}{int(saxs)}{int(xpcs)}0'
     args = {'setupfile': setupfile,
             'analysis': analysis,
             'job_dir': jobdir,

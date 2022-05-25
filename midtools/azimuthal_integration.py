@@ -41,6 +41,7 @@ class Agipd1m(Detector):
 def azimuthal_integration(
     calibrator,
     method="average",
+    integrate='1d',
     last=None,
     mask=None,
     setup=None,
@@ -53,6 +54,7 @@ def azimuthal_integration(
     center=(512, 512),
     distortion_array=None,
     nqbins=300,
+    nphibins=180,
     **kwargs,
 ):
     """Calculate the azimuthally integrated intensity of a run using dask.
@@ -94,23 +96,35 @@ def azimuthal_integration(
 
     @wf._xarray2numpy(dtype="int16")
     @wf._calibrate_worker(calibrator, worker_corrections)
-    def integrate_azimuthally(train_data, integrator=None, returnq=True):
+    def integrate_azimuthally(train_data, integrator=None, integrate='1d', returnq=True):
 
         s = (8192, 128)
         train_data = train_data.reshape(-1, *s)
-        I_v = np.empty((train_data.shape[0], nqbins))
-        for ip, pulse_data in enumerate(train_data):
+        out_shape = [train_data.shape[0], nqbins]
+        if integrate == '2d':
+            out_shape.append(nphibins)
+
+        I_v = np.empty(out_shape)
+        for ipulse in range(out_shape[0]):
+            pulse_data = train_data[ipulse]
             pyfai_mask = np.isnan(pulse_data) | (pulse_data < 0) | ~mask.reshape(s)
-            q, I = integrator.integrate1d(
-                pulse_data, nqbins, mask=pyfai_mask, unit="q_nm^-1", dummy=np.nan
-            )
-            I_v[ip] = I
+            if integrate == '1d':
+                phi = 0
+                q, I_v[ipulse] = integrator.integrate1d(
+                    pulse_data, nqbins, mask=pyfai_mask, unit="q_nm^-1", dummy=np.nan
+                )
+            elif integrate == '2d':
+                Iphiq, q, phi = integrator.integrate2d(
+                    pulse_data, nqbins, nphibins, mask=pyfai_mask, unit="q_nm^-1", dummy=np.nan
+                )
+                I_v[ipulse] = Iphiq.T
         if returnq:
-            return q, I_v
+            return q, phi, I_v
         else:
             return I_v.astype("float32")
 
     t_start = time()
+    integrate = integrate.lower()
 
     # get the azimuthal integrator
     ai = copy.copy(setup.ai)
@@ -120,42 +134,36 @@ def azimuthal_integration(
 
     print("Start computation", flush=True)
     if method == "single":
-        q = integrate_azimuthally(np.ones((16 * 512, 128)), integrator=ai)[0]
+        q, phi, I_v = integrate_azimuthally(np.ones((16 * 512, 128)), integrator=ai, integrate=integrate)
+        if integrate == '1d':
+            output_core_dims = [['pulseId', 'qI']]
+            output_sizes = {'qI': nqbins}
+            coords = {"qI": q}
+        elif integrate == '2d':
+            output_core_dims = [['pulseId', 'qI', 'phi']]
+            output_sizes = {'qI': nqbins, 'phi':nphibins}
+            coords = {"qI": q, 'phi':phi}
+
         darr = xarray.apply_ufunc(
             integrate_azimuthally,
             arr,
-            input_core_dims=[["pulseId", "pixels"]],
+            input_core_dims=[['pulseId', "pixels"]],
             exclude_dims=set(["pixels"]),
-            output_core_dims=[["pulseId", "qI"]],
-            dask_gufunc_kwargs={"output_sizes": {"qI": nqbins}, "allow_rechunk": True},
+            output_core_dims=output_core_dims,
+            dask_gufunc_kwargs={"output_sizes": output_sizes, "allow_rechunk": True},
             dask="parallelized",
             vectorize=True,
-            kwargs=dict(returnq=False, integrator=ai),
+            kwargs=dict(returnq=False, integrator=ai, integrate=integrate),
             output_dtypes=(np.float32),
         )
-        coords = {"qI": q}
         darr = darr.assign_coords(coords)
-
-        # res = da.apply_along_axis(
-        #     integrate_azimuthally,
-        #     dim,
-        #     arr.data,
-        #     dtype="float32",
-        #     shape=(
-        #         npulses,
-        #         500,
-        #     ),
-        #     returnq=False,
-        #     integrator=ai,
-        # )
-
         darr = darr.persist()
         progress(darr)
 
         darr = darr.chunk({"trainId": 10, "pulseId": -1, "qI": nqbins})
         print(darr)
 
-        savdict = {"q(nm-1)": darr.qI, "azimuthal-intensity": darr}
+        savdict = {"q(nm-1)": darr.qI, 'phi':phi, "azimuthal-intensity": darr}
         return savdict
     else:
         raise (

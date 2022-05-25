@@ -295,6 +295,7 @@ class Dataset:
             },
             "SAXS": {
                 "/pulse_resolved/azimuthal_intensity/q": [True],
+                "/pulse_resolved/azimuthal_intensity/phi": [None],
                 "/pulse_resolved/azimuthal_intensity/I": [None],
             },
             "XPCS": {
@@ -667,7 +668,7 @@ class Dataset:
                 nanny=True,
                 death_timeout=60 * 60,
                 walltime="6:00:00",
-                interface="ib0",
+                interface=opt.get('interface', "ib0"),  # or 'eth0'
                 name="midtools",
             )
             self._cluster.scale(nprocs * njobs)
@@ -920,6 +921,7 @@ class Dataset:
             photon_energy=self.photon_energy,
             center=self.center,
             setup=self.setup,
+            integrate='1D',
         )
         saxs_opt.update(self._saxs_opt)
 
