@@ -42,11 +42,9 @@ def azimuthal_integration(
     calibrator,
     method="average",
     integrate='1d',
-    last=None,
     mask=None,
     setup=None,
     geom=None,
-    max_trains=10_000,
     chunks=None,
     savname=None,
     sample_detector=8,
@@ -65,9 +63,6 @@ def azimuthal_integration(
         method (str, optional): how to integrate. Defaults to average. Use
             average to average all trains and pulses. Use single to calculate
             the azimuthally integrated intensity per pulse.
-
-        last (int, optional): last train index. Defaults None. Set to small
-            number for testing.
 
         mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0. If
             None, no pixel is masked.
@@ -104,7 +99,8 @@ def azimuthal_integration(
         if integrate == '2d':
             out_shape.append(nphibins)
 
-        I_v = np.empty(out_shape)
+        print(out_shape)
+        I_v = np.zeros(out_shape, dtype=np.float32)
         for ipulse in range(out_shape[0]):
             pulse_data = train_data[ipulse]
             pyfai_mask = np.isnan(pulse_data) | (pulse_data < 0) | ~mask.reshape(s)
@@ -158,10 +154,8 @@ def azimuthal_integration(
         )
         darr = darr.assign_coords(coords)
         darr = darr.persist()
-        progress(darr)
 
         darr = darr.chunk({"trainId": 10, "pulseId": -1, "qI": nqbins})
-        print(darr)
 
         savdict = {"q(nm-1)": darr.qI, 'phi':phi, "azimuthal-intensity": darr}
         return savdict

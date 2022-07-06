@@ -204,7 +204,6 @@ def get_xpcs_rois(qarr, qmap, valid):
 def correlate(
     calibrator,
     method="intra_train",
-    last=None,
     qmap=None,
     mask=None,
     setup=None,
@@ -223,9 +222,6 @@ def correlate(
 
         method (str, optional): along which axis to correlate. Default is to
             calculate the correlation function per train.
-
-        last (int, optional): last train index. Defaults None. Set to small
-            number for testing.
 
         mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0.
 
