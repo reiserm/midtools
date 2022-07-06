@@ -15,6 +15,7 @@ import copy
 from Xana import Xana
 import Xana.Setup
 from Xana.XpcsAna.pyxpcs3 import pyxpcs
+from Xana.SaxsAna.defineqrois import defineqrois
 from Xana.XpcsAna.xpcsmethods import ttc_to_g2
 
 # reading AGIPD data provided by XFEL
@@ -141,18 +142,47 @@ def update_mask(data, rmap, mask):
     return mask
 
 
-def get_qarr(q_range):
-    if "nsteps" in q_range:
-        qarr = np.logspace(
-            np.log10(q_range["q_first"]), np.log10(q_range["q_last"]), q_range["nsteps"]
-        )
-    elif "qwidth" in q_range:
-        qarr = np.arange(q_range["q_first"], q_range["q_last"], q_range["qwidth"])
+def get_qarr(r, par='q', scale='log'):
+    scale = r.get('scale', scale)
+    if "nsteps" in r:
+        if scale == 'log':
+            arr = np.logspace(
+                np.log10(r[f"{par}_first"]), np.log10(r[f"{par}_last"]), r["nsteps"]
+            )
+        else:
+            arr = np.linspace(
+                r[f"{par}_first"], r[f"{par}_last"], r["nsteps"]
+            )
+
+    elif f"{par}_width" in r:
+        arr = np.arange(r[f"{par}_first"], r[f"{par}_last"], r[f"{par}_width"])
     else:
         raise ValueError(
-            "Could not define q-values. " "q_range not defined properly: " f"{q_range}"
+            "Could not define parameter-ranges. "
+            "range input not defined properly: "
+            f"{r}"
         )
-    return qarr
+    return arr
+
+def get_q_phi_pixels(setup, d):
+    """Input is a dictionary of xpcs_opt."""
+    q_range = d['q_range']
+    qarr = get_qarr(q_range, par='q')
+    qarr = [(qarr, (qarr[1]-qarr[0])),]
+
+    if 'phi_range' in d:
+        phi_range = d['phi_range']
+        phiarr = get_qarr(phi_range, par='phi', scale='lin')
+        phiarr = [(phiarr, (phiarr[1]-phiarr[0])),]
+    else:
+        phiarr = [(0,360)]
+
+    Isaxs = 0  # dummy
+    print(qarr, flush=1)
+    print(phiarr, flush=1)
+    defineqrois(setup, Isaxs, qv_init=qarr, phiv_init=phiarr, mirror=True)
+
+    return setup
 
 
 def get_xpcs_rois(qarr, qmap, valid):
@@ -174,7 +204,6 @@ def get_xpcs_rois(qarr, qmap, valid):
 def correlate(
     calibrator,
     method="intra_train",
-    last=None,
     qmap=None,
     mask=None,
     setup=None,
@@ -193,9 +222,6 @@ def correlate(
 
         method (str, optional): along which axis to correlate. Default is to
             calculate the correlation function per train.
-
-        last (int, optional): last train index. Defaults None. Set to small
-            number for testing.
 
         mask (np.ndarray, optional): Good pixels are 1 bad pixels are 0.
 

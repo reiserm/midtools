@@ -36,7 +36,7 @@ import Xana
 from Xana import Setup
 
 from .azimuthal_integration import azimuthal_integration
-from .correlations import correlate
+from .correlations import correlate, get_q_phi_pixels
 from .average import average
 from .statistics import statistics
 from .calibration import Calibrator, _create_mask_from_dark, _create_mask_from_flatfield
@@ -107,6 +107,7 @@ class Dataset:
         flatfield_run_number=None,
         out_dir="./",
         file_identifier=None,
+        trainId_offset=1,
         **kwargs,
     ):
         """Dataset object to analyze MID datasets on Maxwell.
@@ -202,7 +203,7 @@ class Dataset:
         self.flatfield_run_number = flatfield_run_number
 
         options = ["slurm", "calib"]
-        options.extend(list(map(str.lower, self.METHODS[2:])))
+        options.extend(list(map(str.lower, self.METHODS[1:])))
         for option in options:
             option_name = "_".join([option, "opt"])
             attr_name = "_" + option_name
@@ -232,6 +233,7 @@ class Dataset:
         self.run = RunDirectory(self.datdir)
         self.mask = setup_pars.pop("mask", None)
 
+        self.trainId_offset = trainId_offset
         self.pulses_per_train = pulses_per_train
         self.pulse_step = pulse_step
         self.train_step = train_step
@@ -287,6 +289,7 @@ class Dataset:
             },
             "DIAGNOSTICS": {
                 "/pulse_resolved/xgm/energy": [None],
+                "/identifiers/filtered_trains": [None],
                 "/pulse_resolved/xgm/pointing_x": [None],
                 "/pulse_resolved/xgm/pointing_y": [None],
                 "/train_resolved/sample_position/y": [None],
@@ -295,6 +298,7 @@ class Dataset:
             },
             "SAXS": {
                 "/pulse_resolved/azimuthal_intensity/q": [True],
+                "/pulse_resolved/azimuthal_intensity/phi": [None],
                 "/pulse_resolved/azimuthal_intensity/I": [None],
             },
             "XPCS": {
@@ -617,8 +621,25 @@ class Dataset:
         self.setup.detector.set_pixel_corners(dist)
         self.setup._update_ai()
         qmap = self.setup.ai.array_from_unit(unit="q_nm^-1")
+        phimap = self.setup.ai.chiArray()
         #: np.ndarray: q-map
         self.qmap = qmap.reshape(16, 512, 128)
+        #: np.ndarray: azimhuthal-angle-map
+        self.phimap = phimap.reshape(16, 512, 128)
+
+        self.setup.mask = self.setup.mask.reshape(-1,128)
+        self.setup = get_q_phi_pixels(self.setup, self._xpcs_opt)
+        self.setup.mask = self.setup.mask.reshape(16,512,128)
+
+        #save array of rois
+        img = np.zeros((16,512,128))
+        img[~self.setup.mask] = np.nan
+        img = img.reshape(-1, 128)
+        for i, roi in enumerate(self.setup.qroi):
+            img[roi] = i+1
+        img = img.reshape(16,512,128)
+        np.save(f"{self.out_dir}/rois.npy", self.__agipd_geom.position_modules_fast(img)[0])
+
 
     def _start_slurm_cluster(self):
         """Initialize the slurm cluster"""
@@ -639,7 +660,7 @@ class Dataset:
                 n_workers=nprocs,
             )
         else:
-            print(f"\nSubmitting {njobs} jobs using {nprocs} processes per job.")
+            print(f"Submitting {njobs} jobs using {nprocs} processes per job.")
             self._cluster = SLURMCluster(
                 queue=opt.get("partition", opt.pop("partition","upex")),
                 processes=nprocs,
@@ -650,7 +671,7 @@ class Dataset:
                 nanny=True,
                 death_timeout=60 * 60,
                 walltime="6:00:00",
-                interface="ib0",
+                interface=opt.get('interface', "ib0"),  # or 'eth0'
                 name="midtools",
             )
             self._cluster.scale(nprocs * njobs)
@@ -751,6 +772,7 @@ class Dataset:
         try:
             for method in self.analysis:
                 if method not in ["meta", "diagnostics"] and not self._cluster_running:
+                    print(f"\n{'Fetching Data':-^50}")
                     self._start_slurm_cluster()
                     self._cluster_running = True
                     print("Initializing Data Calibrator...")
@@ -844,7 +866,7 @@ class Dataset:
         self._calibrator = Calibrator(
             self.run,
             cell_ids=self.cell_ids,
-            train_ids=self.train_ids,
+            train_ids=self.selected_train_ids,
             dark_run_number=self.dark_run_number,
             mask=self.mask.copy(),
             is_dark=self.is_dark,
@@ -855,6 +877,12 @@ class Dataset:
 
     def _compute_diagnostics(self):
         """Read diagnostic data."""
+
+        diagnostics_opt = dict(
+                xgm_threshold=0,
+        )
+        diagnostics_opt.update(self._diagnostics_opt)
+
         print(f"Read XGM and control sources.")
         sources = {
             "SA2_XTD1_XGM/XGM/DOOCS:output": [
@@ -876,17 +904,23 @@ class Dataset:
                 data = self.run.get_array(source, key)
                 # we subtract 1 from the trainId to account for the shift
                 # between AGIPD and other data sources.
-                sel_trains = np.intersect1d(data.trainId, self.train_ids - 1)
+                sel_trains = np.intersect1d(data.trainId, self.train_ids - self.trainId_offset)
                 data = data.sel(trainId=sel_trains)
                 method = None if len(sel_trains) == len(self.train_ids) else "nearest"
-                data = data.reindex(trainId=self.train_ids - 1, method=method)
+                data = data.reindex(trainId=self.train_ids - self.trainId_offset, method=method)
                 if len(data.dims) == 2:
                     data = data[:, : len(self.cell_ids)]
                 arr["/".join((source, key))] = data
-                if "XGM" in source and key == "data.intensityTD":
-                    self.selected_train_ids = data.isel(
-                        trainId=data.mean("dim_0") > 500
-                    ).trainId
+                if ("XGM" in source) and (key == "data.intensityTD") and (diagnostics_opt['xgm_threshold']>0):
+                    self.selected_train_ids = np.intersect1d(data.isel(
+                        trainId=data.mean("dim_0") > diagnostics_opt['xgm_threshold']
+                    ).trainId, self.train_ids)
+                    print(f"{self.selected_train_ids.size}/{self.train_ids.size} remain after filtering by XGM threshold.")
+                    arr['filtered_trains'] = self.selected_train_ids
+                    self.ntrains = len(self.selected_train_ids)
+                else:
+                    if not 'filtered_trains' in arr:
+                        arr['filtered_trains'] = self.train_ids
 
         return self._write_to_h5(arr, "DIAGNOSTICS")
 
@@ -896,13 +930,12 @@ class Dataset:
         saxs_opt = dict(
             mask=self.mask,
             geom=self.agipd_geom,
-            last=self.last_train_idx,
-            max_trains=200,
             distortion_array=self.agipd_geom.to_distortion_array(),
             sample_detector=self.sample_detector,
             photon_energy=self.photon_energy,
             center=self.center,
             setup=self.setup,
+            integrate='1D',
         )
         saxs_opt.update(self._saxs_opt)
 
@@ -928,7 +961,6 @@ class Dataset:
             mask=self.mask,
             qmap=self.qmap,
             setup=self.setup,
-            last=self.last_train_idx,
             dt=self.pulse_delay,
             use_multitau=False,
             rebin_g2=False,
@@ -1058,7 +1090,6 @@ class Dataset:
             mask=self.mask,
             setup=self.setup,
             geom=self.agipd_geom,
-            last=self.last_train_idx,
             max_trains=200,
         )
         statistics_opt.update(self._statistics_opt)
@@ -1076,12 +1107,13 @@ class Dataset:
         if self.file_name is not None:
             keys = list(self.h5_structure[method.upper()].keys())
             with h5.File(self.file_name, "r+") as f:
-                for keyh5, data in zip(keys, output.values()):
+                for keyh5, (outkey, data) in zip(keys, output.items()):
                     if data is not None:
                         # check scalars and fixed_size
                         if np.isscalar(data):
                             f[keyh5] = data
                         else:
+                            # print(outkey, keyh5, np.asarray(data).shape)
                             f.create_dataset(
                                 keyh5,
                                 data=np.asarray(data),
