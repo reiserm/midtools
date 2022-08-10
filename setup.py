@@ -37,6 +37,7 @@ setup(
         "extra_geom",
         "dask[complete]==2.30.0",
         "dask_jobqueue==0.7.1",
+        "xarray==0.17.0",
         "click==7.1.2",
         "Xana",
         "tqdm",
