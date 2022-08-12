@@ -250,7 +250,7 @@ class Dataset:
 
         # Experimental Setup
         #: tuple: Position of the direct beam in pixels
-        self.center = None
+        self.center = setup_pars.pop("beamcenter", None)
         self.agipd_geom = setup_pars.pop("geometry", False)
 
         # save the other entries as attributes
