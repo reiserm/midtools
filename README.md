@@ -1,7 +1,6 @@
 # midtools
 
-Data analysis tools and example jupyter notebooks for MID experinemts.
-Developed in preparation for experiment 2458.
+Data analysis tools and example jupyter notebooks for MID XPCS experinemts.
 
 Further information can be found on [ReadTheDocs](https://midtools.readthedocs.io/en/latest/index.html).
 
@@ -39,3 +38,11 @@ python -m ipykernel install --user --name midtools
 ```
 
 Run the notebook on Max-JHub. The kernel `midtools` should be available in the list of kernels.
+
+## Notes:
+
+- Use the new mask `mask_r0041_00.npy`.
+
+
+
+
