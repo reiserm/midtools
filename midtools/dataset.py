@@ -107,7 +107,7 @@ class Dataset:
         flatfield_run_number=None,
         out_dir="./",
         file_identifier=None,
-        trainId_offset=1,
+        trainId_offset=0,
         **kwargs,
     ):
         """Dataset object to analyze MID datasets on Maxwell.
