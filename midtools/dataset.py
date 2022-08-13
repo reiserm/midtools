@@ -905,25 +905,26 @@ class Dataset:
         for source in sources:
             for key in sources[source]:
                 data = self.run.get_array(source, key)
-                # we subtract 1 from the trainId to account for the shift
-                # between AGIPD and other data sources.
-                sel_trains = np.intersect1d(data.trainId, self.train_ids - self.trainId_offset)
-                data = data.sel(trainId=sel_trains)
-                method = None if len(sel_trains) == len(self.train_ids) else "nearest"
-                data = data.reindex(trainId=self.train_ids - self.trainId_offset, method=method)
-                if len(data.dims) == 2:
-                    data = data[:, : len(self.cell_ids)]
-                arr["/".join((source, key))] = data
                 if ("XGM" in source) and (key == "data.intensityTD") and (diagnostics_opt['xgm_threshold']>0):
                     self.selected_train_ids = np.intersect1d(data.isel(
-                        trainId=data.mean("dim_0") > diagnostics_opt['xgm_threshold']
+                      trainId=data.mean("dim_0") > diagnostics_opt['xgm_threshold']
                     ).trainId, self.train_ids)
-                    print(f"{self.selected_train_ids.size}/{self.train_ids.size} remain after filtering by XGM threshold.")
+                    print(f"{self.selected_train_ids.size}/{self.train_ids.size} remain after filtering by XGM threshold.
                     arr['filtered_trains'] = self.selected_train_ids
                     self.ntrains = len(self.selected_train_ids)
                 else:
                     if not 'filtered_trains' in arr:
                         arr['filtered_trains'] = self.train_ids
+
+                # we subtract trainId_offset from the trainId to account for the shift
+                # between AGIPD and other data sources.
+                sel_trains = np.intersect1d(data.trainId, self.selected_train_ids - self.trainId_offset)
+                data = data.sel(trainId=sel_trains)
+                method = None if len(sel_trains) == len(self.selected_train_ids) else "nearest"
+                data = data.reindex(trainId=self.selected_train_ids - self.trainId_offset, method=method)
+                if len(data.dims) == 2:
+                    data = data[:, : len(self.cell_ids)]
+                arr["/".join((source, key))] = data
 
         return self._write_to_h5(arr, "DIAGNOSTICS")
 
