@@ -12,7 +12,7 @@ with open("README.md", "r") as fh:
 setup(
     cmdclass={"sdist": sdist},
     name="midtools",
-    version="0.2.4",
+    version="0.2.5",
     packages=setuptools.find_packages(),
     license="BSD-III",
     author="Mario Reiser",
