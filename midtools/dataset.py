@@ -909,7 +909,7 @@ class Dataset:
                     self.selected_train_ids = np.intersect1d(data.isel(
                       trainId=data.mean("dim_0") > diagnostics_opt['xgm_threshold']
                     ).trainId, self.train_ids)
-                    print(f"{self.selected_train_ids.size}/{self.train_ids.size} remain after filtering by XGM threshold.
+                    print(f"{self.selected_train_ids.size}/{self.train_ids.size} remain after filtering by XGM threshold.")
                     arr['filtered_trains'] = self.selected_train_ids
                     self.ntrains = len(self.selected_train_ids)
                 else:
