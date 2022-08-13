@@ -416,7 +416,7 @@ class Dataset:
         if self.center is None:
             self.center = geom.position_modules_fast(dummy_img)[1][::-1]
         else:
-            self.center = tuple(map(float, self.center))
+            self.center = tuple(map(float, self.center.split(',')))
         del dummy_img
 
     @property
