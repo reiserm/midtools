@@ -288,8 +288,8 @@ class Dataset:
                 "/identifiers/all_trains": [True],
             },
             "DIAGNOSTICS": {
-                "/pulse_resolved/xgm/energy": [None],
                 "/identifiers/filtered_trains": [None],
+                "/pulse_resolved/xgm/energy": [None],
                 "/pulse_resolved/xgm/pointing_x": [None],
                 "/pulse_resolved/xgm/pointing_y": [None],
                 "/train_resolved/sample_position/y": [None],
