@@ -12,7 +12,6 @@ import pdb
 class Calibrator:
     """Calibrate AGIPD dataset"""
 
-    adu_per_photon = 66
     mask = np.ones((16, 512, 128), "bool")
 
     def __init__(
@@ -33,6 +32,7 @@ class Calibrator:
         subshape=(64, 64),
         cell_commonmode=False,
         cellCM_window=2,
+        adu_per_photon=66,
     ):
 
         #: DataCollection: e.g., returned from extra_data.RunDirectory
@@ -65,6 +65,7 @@ class Calibrator:
 
         self.mask = mask
         self.xmask = self.mask
+        self.adu_per_photon = adu_per_photon
 
         self.is_proc = None
         #: (np.ndarray): average dark over trains

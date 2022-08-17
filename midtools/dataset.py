@@ -252,6 +252,7 @@ class Dataset:
         #: tuple: Position of the direct beam in pixels
         self.center = setup_pars.pop("beamcenter", None)
         self.agipd_geom = setup_pars.pop("geometry", False)
+        self.adu_per_photon = setup_pars.pop("adu_per_photon", 66)
 
         # save the other entries as attributes
         self.__dict__.update(setup_pars)
@@ -875,6 +876,7 @@ class Dataset:
             is_dark=self.is_dark,
             is_flatfield=self.is_flatfield,
             flatfield_run_number=self.flatfield_run_number,
+            adu_per_photon=self.adu_per_photon,
             **self._calib_opt,
         )
 
